@@ -1,0 +1,16 @@
+*.pth
+*.tar
+*.log
+*.txt
+*.csv
+*.json
+
+tf_weights/
+tf_to_pt_weights/
+nohup/
+model_best/
+KD/
+clip_ckpt/
+checkpoints/
+wandb/
+tmp/
