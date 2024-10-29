@@ -85,17 +85,20 @@ parser.add_argument('--image_size', default=240, type=int,
                     help='image size')
 parser.add_argument('--advprop', default=False, action='store_true',
                     help='use advprop or not')
-
+parser.add_argument('--validate', default=False, action='store_true',
+                    help='only validate')
+parser.add_argument('--classification', default=False, action='store_true',
+                    help='only classification')
 MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
 
-LAST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/last.pth.tar'
-MODEL_BEST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/model_best.pth.tar'
+LAST_PTH = '/home/mango/LGD-CLIP/clip_ckpt_LP/last.pth.tar'
+MODEL_BEST_PTH = '/home/mango/LGD-CLIP/clip_ckpt_LP/model_best.pth.tar'
 
-WEIGHTS_PATH = '/root/LGD2024/examples_old/imagenet/model_best_blurpool_78_528.pth.tar'
+WEIGHTS_PATH = '/home/mango/LGD-CLIP/model_best_blurpool_78_528.pth.tar'
 
-TRAIN_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_train_with_labels.csv'
-VAL_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_val_with_labels.csv'
+TRAIN_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_train_with_labels.csv'
+VAL_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_val_with_labels.csv'
 
 import open_clip
 
@@ -657,6 +660,15 @@ def main_worker(args):
         for param in text_encoder.parameters():
             param.requires_grad = True
 
+    if args.validate:
+        top1_acc = validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, 0, scheduler, optimizer)
+        print(f"Validation top1_acc: {top1_acc}")
+        return
+    elif args.classification:
+        top1_acc = classification(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, 0, scheduler, optimizer)
+        print(f"Classification top1_acc: {top1_acc}")
+        return
+    
     for epoch in range(args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
