@@ -95,8 +95,8 @@ MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
 
 # mango
-LAST_PTH = '/home/mango/LGD-CLIP/clip_ckpt_LP/last.pth.tar'
-MODEL_BEST_PTH = '/home/mango/LGD-CLIP/clip_ckpt_LP/model_best.pth.tar'
+LAST_PTH = '/home/mango/LGD-CLIP/clip_ckpt/last.pth.tar'
+MODEL_BEST_PTH = '/home/mango/LGD-CLIP/clip_ckpt/model_best.pth.tar'
 
 WEIGHTS_PATH = '/home/mango/LGD-CLIP/model_best_blurpool_78_528.pth.tar'
 
@@ -272,8 +272,15 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
     return top1_accuracy, lp_ft_loss
 
 def train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer):
-    image_encoder.train()
-    text_encoder.train()
+    if args.train_type == 'lp':    
+        image_encoder.eval()
+        text_encoder.eval()
+    elif args.train_type == 'ft':
+        image_encoder.train()
+        text_encoder.train()
+    elif args.train_type == 'teft':
+        image_encoder.eval()
+        text_encoder.train()
     image_projection.train()
     text_projection.train()
     
