@@ -47,13 +47,9 @@ parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
-parser.add_argument('--lp_epochs', default=0, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--ft_epochs', default=100, type=int, metavar='N',
-                    help='number of total epochs to run')
 parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch_size', default=128, type=int,
+parser.add_argument('-b', '--batch_size', default=64, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -67,6 +63,8 @@ parser.add_argument('--wd', '--weight_decay', default=5e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('--drop_out', default=0.1, type=float, help='drop out')
 parser.add_argument('--warmup_epochs', default=0, type=int, help='warmup epochs')
+parser.add_argument('--train_type', type=str, choices=["lp", "ft", "teft", "lpft"], required=True, help="Specify the training type: 'lp' for linear probing, 'ft' for fine-tuning, 'teft' for task-specific fine-tuning"
+)
 
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
@@ -91,6 +89,13 @@ parser.add_argument('--advprop', default=False, action='store_true',
 MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
 
+LAST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/last.pth.tar'
+MODEL_BEST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/model_best.pth.tar'
+
+WEIGHTS_PATH = '/root/LGD2024/examples_old/imagenet/model_best_blurpool_78_528.pth.tar'
+
+TRAIN_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_train_with_labels.csv'
+VAL_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_val_with_labels.csv'
 
 import open_clip
 
@@ -305,12 +310,10 @@ def ft_one_epoch(args, image_encoder, text_encoder, image_projection, text_proje
     return top1_accuracy, lp_ft_loss
 
 def full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer):
-    image_encoder.eval()
-    text_encoder.eval()
+    image_encoder.train()
+    text_encoder.train()
     image_projection.train()
     text_projection.train()
-    
-    # image_projection._set_static_graph()
     
     if args.distributed:
         train_sampler.set_epoch(epoch)
@@ -334,26 +337,21 @@ def full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_p
             lp_ft_loss.backward()
             optimizer.step()
 
-def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels):
+def val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, labels):
     images = images.cuda(args.gpu)
     labels = labels.cuda(args.gpu)
     
     image_features = image_encoder(images)
-    text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
-    text_features = text_encoder(**text_inputs).pooler_output
-
+    
     # Feature embedding
     image_embeds, logit_scale = image_projection(image_features)
-    text_embeds = text_projection(text_features)
     
     image_embeddings_all.append(image_embeds)
-    text_embeddings_all.append(text_embeds)
     labels_all.append(labels)
     
-    return image_embeddings_all, text_embeddings_all, labels_all, logit_scale
+    return image_embeddings_all, labels_all, logit_scale
 
 def get_metric(image_features, text_features, logit_scale):
-    metrics = {}
     logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
     logits_per_text = logits_per_image.t().detach().cpu()
 
@@ -382,21 +380,19 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
     text_projection.eval()
     
     image_embeddings_all = []
-    text_embeddings_all = []
     labels_all = []
     
     with torch.no_grad():
         tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
         if args.local_rank == 0:
             print('validation')
-            for images, texts, labels in tqdm(val_loader):
-                image_embeddings_all, text_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
+            for images, _, labels in tqdm(val_loader):
+                image_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, labels)
         else:
-            for images, texts, labels in val_loader:
-                image_embeddings_all, text_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
+            for images, _, labels in val_loader:
+                image_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, labels)
     
         image_embeddings_all = torch.cat(image_embeddings_all)
-        text_embeddings_all = torch.cat(text_embeddings_all)
         labels_all = torch.cat(labels_all)
 
         text_embeddings_new = []
@@ -424,10 +420,10 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_new.T)
         top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
         
-        print(f"top1_pred_indices: {top1_pred_indices[:100]}")
-        print(f"labels_all: {labels_all[:100]}")
-        print(f"top1_pred_indices size: {top1_pred_indices.size()}, {top1_pred_indices.dtype}")
-        print(f"labels_all size: {labels_all.size()}, {labels_all.dtype}")
+        # print(f"top1_pred_indices: {top1_pred_indices[:100]}")
+        # print(f"labels_all: {labels_all[:100]}")
+        # print(f"top1_pred_indices size: {top1_pred_indices.size()}, {top1_pred_indices.dtype}")
+        # print(f"labels_all size: {labels_all.size()}, {labels_all.dtype}")
         
         # top1_pred_labels = labels_all[top1_pred_indices]
 
@@ -477,10 +473,10 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
     
     return top1_accuracy
 
-def save_checkpoint(state, is_best, filename='/home/mango/LGD-CLIP/clip_ckpt/last.pth.tar'):
+def save_checkpoint(state, is_best, filename=LAST_PTH):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, '/home/mango/LGD-CLIP/clip_ckpt/model_best.pth.tar')
+        shutil.copyfile(filename, MODEL_BEST_PTH)
     
 # def zeroshot_classifier(args, image_encoder, text_encoder, image_projection, text_projection, val_loader):
 #     global MODEL
@@ -568,10 +564,6 @@ def main():
                       'You may see unexpected behavior when restarting '
                       'from checkpoints.')
 
-    # if args.gpu is not None:
-    #     warnings.warn('You have chosen a specific GPU. This will completely '
-    #                   'disable data parallelism.')
-
     cvd = list(os.environ["CUDA_VISIBLE_DEVICES"])
     args.distributed = False
     if len(cvd) > 1:
@@ -583,7 +575,6 @@ def main():
     ngpus_per_node = torch.cuda.device_count()
     if args.distributed:
         main_worker(args)
-        # mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
     else:
         main_worker(args)
 
@@ -611,7 +602,7 @@ def main_worker(args):
         
     # 사전 학습된 모델 로드
     # Image encoder는 EfficientNet_-b1 사용, text encoder는 Transformer 사용
-    image_encoder = EfficientNet.from_pretrained(args.arch, weights_path='/home/mango/LGD-CLIP/model_best_blurpool_78_528.pth.tar', advprop=args.advprop)
+    image_encoder = EfficientNet.from_pretrained(args.arch, weights_path=WEIGHTS_PATH, advprop=args.advprop)
     
     if hasattr(image_encoder, '_fc'):
         image_encoder._fc = torch.nn.Identity()
@@ -687,10 +678,8 @@ def main_worker(args):
         normalize,
     ])
     
-    train_csv_file = '/home/mango/LGD-CLIP/imagenet_caption_train_with_labels.csv'
-    val_csv_file = '/home/mango/LGD-CLIP/imagenet_caption_val_with_labels.csv'
-    train_df = pd.read_csv(train_csv_file)
-    val_df = pd.read_csv(val_csv_file)
+    train_df = pd.read_csv(TRAIN_CSV_FILE)
+    val_df = pd.read_csv(VAL_CSV_FILE)
     
     train_dataset = ImageTextDataset(train_df, train_transforms)
     val_dataset = ImageTextDataset(val_df, val_transforms)
@@ -701,62 +690,40 @@ def main_worker(args):
     else:
         train_sampler = None
         val_sampler = None
-        
-    # if args.distributed:
-    #     train_loader = DataLoader(train_dataset, batch_size=args.batch_size//args.world_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=train_sampler)
-    #     val_loader = DataLoader(val_dataset, batch_size=args.batch_size//args.world_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=val_sampler)
-    # else:
-    #     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
-    #     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
     
-    # # Learning loop
-    # optimizer = optim.Adam(list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.lp_epochs)
-    
-    # prev_top1_accuracy = 0
-    # count = 0
-    # for param in image_encoder.parameters():
-    #     param.requires_grad = False
-    # for param in text_encoder.parameters():
-    #     param.requires_grad = False
-    # for epoch in range(args.lp_epochs):
-    #     if args.distributed:
-    #         train_sampler.set_epoch(epoch)
-    #     linear_probing(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
-    #     top1_accuracy = validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer)
-        # if prev_top1_accuracy < top1_accuracy:
-        #     prev_top1_accuracy = top1_accuracy
-        #     count = 0
-        # else:
-        #     count += 1
-        #     if count > 20:
-        #         break
-    
-    # args.lr = args.lr*0.1
-    # args.ft_batch_size = int(args.batch_size/4)
-    args.ft_batch_size = args.batch_size
-    
-    optimizer = optim.Adam(list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.ft_epochs)
-    # scheduler = WarmupCosineAnnealingLR(optimizer, warmup_epochs=args.warmup_epochs, max_epochs=args.ft_epochs+args.warmup_epochs, min_lr=args.lr/10)
+    optimizer = optim.Adam(list(image_encoder.parameters()) + list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+    if args.warmup_epochs > 0:
+        scheduler = WarmupCosineAnnealingLR(optimizer, warmup_epochs=args.warmup_epochs, max_epochs=args.epochs+args.warmup_epochs, min_lr=args.lr/10)
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
     
     if args.distributed:
-        train_loader = DataLoader(train_dataset, batch_size=args.ft_batch_size//args.world_size, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=train_sampler)
-        val_loader = DataLoader(val_dataset, batch_size=args.ft_batch_size//args.world_size, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=val_sampler)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size//args.world_size, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=train_sampler)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size//args.world_size, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=val_sampler)
     else:
-        train_loader = DataLoader(train_dataset, batch_size=args.ft_batch_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=args.ft_batch_size, shuffle=False, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
     
-    prev_top1_accuracy = 0
-    count = 0
-    
-    image_projection._set_static_graph()
-    
-    for param in image_encoder.parameters():
-        param.requires_grad = False
-    for param in text_encoder.parameters():
-        param.requires_grad = False
-    for epoch in range(args.ft_epochs):
+    if args.distributed:
+        image_projection._set_static_graph()
+
+    if args.train_type == 'lp':    
+        for param in image_encoder.parameters():
+            param.requires_grad = False
+        for param in text_encoder.parameters():
+            param.requires_grad = False
+    elif args.train_type == 'ft':
+        for param in image_encoder.parameters():
+            param.requires_grad = True
+        for param in text_encoder.parameters():
+            param.requires_grad = True
+    elif args.train_type == 'teft':
+        for param in image_encoder.parameters():
+            param.requires_grad = False
+        for param in text_encoder.parameters():
+            param.requires_grad = True
+
+    for epoch in range(args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
