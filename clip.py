@@ -337,41 +337,25 @@ def full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_p
             lp_ft_loss.backward()
             optimizer.step()
 
-def val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, labels):
+def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels):
     images = images.cuda(args.gpu)
     labels = labels.cuda(args.gpu)
     
     image_features = image_encoder(images)
-    
+    text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
+    text_features = text_encoder(**text_inputs).pooler_output
+
     # Feature embedding
     image_embeds, logit_scale = image_projection(image_features)
+    text_embeds = text_projection(text_features)
     
     image_embeddings_all.append(image_embeds)
+    text_embeddings_all.append(text_embeds)
     labels_all.append(labels)
     
-    return image_embeddings_all, labels_all, logit_scale
+    return image_embeddings_all, text_embeddings_all, labels_all, logit_scale
 
-def get_metric(image_features, text_features, logit_scale):
-    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-    logits_per_text = logits_per_image.t().detach().cpu()
-
-    logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
-    ground_truth = torch.arange(len(text_features)).view(-1, 1)
-
-    for name, logit in logits.items():
-        ranking = torch.argsort(logit, descending=True)
-        preds = torch.where(ranking == ground_truth)[1]
-        preds = preds.detach().cpu().numpy()
-
-        metric = np.mean(preds < 1)
-        # metrics[f"{name}_mean_rank"] = preds.mean() + 1
-        # metrics[f"{name}_median_rank"] = np.floor(np.median(preds)) + 1
-        # for k in [1, 5, 10]:
-        #     metrics[f"{name}_R@{k}"] = np.mean(preds < k)
-
-    return metric
-
-def validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
+def classification(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
     global BEST_ACC1
     
     image_encoder.eval()
@@ -386,11 +370,11 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
         if args.local_rank == 0:
             print('validation')
-            for images, _, labels in tqdm(val_loader):
-                image_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, labels)
+            for images, texts, labels in tqdm(val_loader):
+                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, texts, labels)
         else:
-            for images, _, labels in val_loader:
-                image_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, labels)
+            for images, texts, labels in val_loader:
+                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, texts, labels)
     
         image_embeddings_all = torch.cat(image_embeddings_all)
         labels_all = torch.cat(labels_all)
@@ -412,42 +396,69 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         print("image_embeddings_all :", image_embeddings_all.size())
         print("labels_all :", labels_all.size())
 
-# #####EDit######
-        # # Normalize embeddings
-        # image_embeddings_all = F.normalize(image_embeddings_all, dim=1)
-        # text_embeddings_new = F.normalize(text_embeddings_new, dim=1)
-        
         similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_new.T)
         top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
         
-        # print(f"top1_pred_indices: {top1_pred_indices[:100]}")
-        # print(f"labels_all: {labels_all[:100]}")
-        # print(f"top1_pred_indices size: {top1_pred_indices.size()}, {top1_pred_indices.dtype}")
-        # print(f"labels_all size: {labels_all.size()}, {labels_all.dtype}")
-        
-        # top1_pred_labels = labels_all[top1_pred_indices]
-
         # Compute top-1 accuracy
         correct = (top1_pred_indices == labels_all).sum().item()
 
         total = labels_all.size(0)
         top1_accuracy = correct / total
-######EDit######
+
+        if args.local_rank == 0:
+            print('top1_accuracy :', top1_accuracy*100, end=" ")
+            print('%')
+            wandb.log({'top1_accuracy': top1_accuracy*100})
+            
+        is_best = top1_accuracy > BEST_ACC1
+        BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
+            
+    torch.cuda.empty_cache()
+    
+    return top1_accuracy
+
+def save_checkpoint(state, is_best, filename=LAST_PTH):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, MODEL_BEST_PTH)
+    
+def validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
+    global BEST_ACC1
+    
+    image_encoder.eval()
+    text_encoder.eval()
+    image_projection.eval()
+    text_projection.eval()
+    
+    image_embeddings_all = []
+    text_embeddings_all = []
+    labels_all = []
+    
+    with torch.no_grad():
+        if args.local_rank == 0:
+            print('validation')
+            for images, texts, labels in tqdm(val_loader):
+                image_embeddings_all, text_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
+        else:
+            for images, texts, labels in val_loader:
+                image_embeddings_all, text_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
+    
+        image_embeddings_all = torch.cat(image_embeddings_all)
+        text_embeddings_all = torch.cat(text_embeddings_all)
+        labels_all = torch.cat(labels_all)
+
         # image_embeddings_all = F.normalize(image_embeddings_all, dim=1)
         # text_embeddings_all = F.normalize(text_embeddings_all, dim=1)
 
-        # similarities = torch.matmul(image_embeddings_all, text_embeddings_all.t())
-        # print(similarities.size())
-        # print("similarities :", similarities)
-        # similarities = similarities.argmax(dim=1)
-        
-        # correct = (similarities == torch.arange(similarities.size(0)).cuda()).sum().item()
+        similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_all.T)
 
-        # total = text_embeddings_all.size(0)
-        # top1_accuracy = correct / total
+        top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
+        top1_pred_labels = labels_all[top1_pred_indices]
 
-        # top1_accuracy = get_metric(image_embeddings_all, text_embeddings_all, logit_scale)
-        
+        correct = (top1_pred_labels == labels_all).sum().item()
+        total = text_embeddings_all.size(0)
+        top1_accuracy = correct / total
+
         if args.local_rank == 0:
             print('top1_accuracy :', top1_accuracy*100, end=" ")
             print('%')
@@ -472,84 +483,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
     torch.cuda.empty_cache()
     
     return top1_accuracy
-
-def save_checkpoint(state, is_best, filename=LAST_PTH):
-    torch.save(state, filename)
-    if is_best:
-        shutil.copyfile(filename, MODEL_BEST_PTH)
-    
-# def zeroshot_classifier(args, image_encoder, text_encoder, image_projection, text_projection, val_loader):
-#     global MODEL
-    
-#     image_encoder.eval()
-#     text_encoder.eval()
-#     image_projection.eval()
-#     text_projection.eval()
-    
-#     image_embeddings_all = []
-#     text_embeddings_all = []
-#     labels_all = []
-    
-#     with torch.no_grad():
-#         tokenizer = AutoTokenizer.from_pretrained(MODEL)
-#         for c in tqdm(CLASSNAMES):
-#             texts = [t.format(c) for t in TEMPLATES]
-#             texts = tokenizer(texts, return_tensors='pt', padding=True, truncation=True)
-#             text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
-#             text_features = text_encoder(**text_inputs).pooler_output
-
-#             # Feature embedding
-#             text_embeds = text_projection(text_features)
-#             text_embeddings_all.append(text_embeds)
-        
-#         text_embeddings_all = torch.cat(text_embeddings_all)
-#         # text_embeddings_all : 80000x512
-    
-#     with torch.no_grad():
-#         for images, labels in tqdm(val_loader):
-#             images = images.cuda(args.gpu)
-#             labels = labels.cuda(args.gpu)
-            
-#             image_features = image_encoder(images)
-
-#             # Feature embedding
-#             image_embeds = image_projection(image_features)
-            
-#             image_embeddings_all.append(image_embeds)
-#             labels_all.append(labels)
-    
-#     image_embeddings_all = torch.cat(image_embeddings_all)
-#     labels_all = torch.cat(labels_all)
-#     # image_embedding_all : 10000x512
-#     # labels_all : 10000x512
-    
-#     # Normalize embeddings
-#     # image_embeddings_all = F.normalize(image_embeddings_all, dim=1)
-#     # text_embeddings_all = F.normalize(text_embeddings_all, dim=1)
-    
-#     similarities = torch.matmul(image_embeddings_all, text_embeddings_all.T)
-#     top1_pred_indices = ((similarities.argmax(dim=1))/len(TEMPLATES)).to(torch.int)
-    
-#     print(f"top1_pred_indices: {top1_pred_indices[:100]}")
-#     print(f"labels_all: {labels_all[:100]}")
-#     print(f"top1_pred_indices size: {top1_pred_indices.size()}, {top1_pred_indices.dtype}")
-#     print(f"labels_all size: {labels_all.size()}, {labels_all.dtype}")
-    
-#     top1_pred_labels = labels_all[top1_pred_indices]
-
-#     # Compute top-1 accuracy
-#     correct = (top1_pred_labels == labels_all).sum().item()
-#     print("top1_pred_labels :", top1_pred_labels)
-#     print("labels_all :", labels_all)
-#     total = labels_all.size(0)
-#     top1_accuracy = correct / total
-
-#     print('top1_accuracy :', top1_accuracy*100, end=" ")
-#     print('%')
-#     if args.local_rank == 0:
-#         wandb.log({'top1_accuracy': top1_accuracy*100})
-
-   
+  
 def main():    
     args = parser.parse_args()
     torch.set_num_threads(args.workers)
