@@ -79,12 +79,14 @@ parser.add_argument('--dist_url', default='env://', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist_backend', default='nccl', type=str,
                     help='distributed backend')
+
 parser.add_argument('--seed', default=42, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--image_size', default=240, type=int,
                     help='image size')
 parser.add_argument('--advprop', default=False, action='store_true',
                     help='use advprop or not')
+
 parser.add_argument('--validate', default=False, action='store_true',
                     help='only validate')
 parser.add_argument('--classification', default=False, action='store_true',
@@ -109,15 +111,6 @@ VAL_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_val_with_labels.csv'
 
 # TRAIN_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_train_with_labels.csv'
 # VAL_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_val_with_labels.csv'
-
-import open_clip
-
-# 원하는 text encoder 모델 이름과 해당 모델의 가중치(체크포인트) 이름을 지정
-model_name = "ViT-B-32"
-pretrained = "openai"
-
-# 모델과 Preprocessor 로드
-model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
 
 # dataset class 정의
 class ImageTextDataset(Dataset):
@@ -240,56 +233,12 @@ def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     
     return loss
 
-# def linear_probing(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer):
-#     image_projection.train()
-#     text_projection.train()
-    
-#     if args.distributed:
-#         train_sampler.set_epoch(epoch)
-#     scheduler.step()
-    
-#     print('lp epoch=', epoch)
-#     print('train')
-#     for images, texts, labels in tqdm(train_loader):
-#         images = images.cuda(args.gpu, non_blocking=True)
-#         labels = labels.cuda(args.gpu)
+def save_checkpoint(state, is_best, filename=LAST_PTH):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, MODEL_BEST_PTH)
 
-#         # Image와 text를 encoding
-#         image_features = image_encoder(images).cuda(args.gpu)
-#         text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
-#         text_features = text_encoder(**text_inputs).pooler_output
-
-#         # Feature embedding
-#         image_embeds = image_projection(image_features)
-#         text_embeds = text_projection(text_features)
-#         logit_scale = image_projection.module.logit_scale
-#         # logit_scale = 1
-
-#         # Loss 계산 및 back prop
-#         lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
-        
-#         similarities = torch.matmul(image_embeds, text_embeds.T)
-
-#         top1_pred_indices = similarities.argmax(dim=1)
-#         top1_pred_labels = labels[top1_pred_indices]
-
-#         # Compute top-1 accuracy
-#         correct = (top1_pred_labels == labels).sum().item()
-#         total = labels.size(0)
-#         top1_accuracy = correct / total
-
-#         if args.local_rank == 0:
-#             wandb.log({'lp_ft_top1_accuracy': top1_accuracy*100, 'lp_ft_loss': lp_ft_loss})
-        
-#         optimizer.zero_grad()
-#         lp_ft_loss.backward()
-#         optimizer.step()
-#         strFormat = '%-6s%-5s%-20s%-10s%-11s%-8s\n'
-#         strOut = strFormat % ('epoch=', epoch, 'lp_ft_top1_accuracy=', round(top1_accuracy*100, 4), 'lp_ft_loss=', round(lp_ft_loss.item(), 4))
-#         # print(strOut, end="")
-
-
-def ft_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels):
+def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels):
     images = images.cuda(args.gpu, non_blocking=True)
     labels = labels.cuda(args.gpu)
 
@@ -322,7 +271,7 @@ def ft_one_epoch(args, image_encoder, text_encoder, image_projection, text_proje
     
     return top1_accuracy, lp_ft_loss
 
-def full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer):
+def train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer):
     image_encoder.train()
     text_encoder.train()
     image_projection.train()
@@ -335,7 +284,7 @@ def full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_p
     if args.local_rank == 0:
         print("full fine tuning")
         for images, texts, labels in tqdm(train_loader):
-            top1_accuracy, lp_ft_loss = ft_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
+            top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
             
             optimizer.zero_grad()
             lp_ft_loss.backward()
@@ -344,7 +293,7 @@ def full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_p
             wandb.log({'lp_ft_top1_accuracy': top1_accuracy*100, 'lp_ft_loss': lp_ft_loss})
     else:
         for images, texts, labels in train_loader:
-            top1_accuracy, lp_ft_loss = ft_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
+            top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
             
             optimizer.zero_grad()
             lp_ft_loss.backward()
@@ -367,74 +316,6 @@ def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_proj
     labels_all.append(labels)
     
     return image_embeddings_all, text_embeddings_all, labels_all, logit_scale
-
-def classification(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
-    global BEST_ACC1
-    
-    image_encoder.eval()
-    text_encoder.eval()
-    image_projection.eval()
-    text_projection.eval()
-    
-    image_embeddings_all = []
-    text_embeddings_all = []
-    labels_all = []
-    
-    with torch.no_grad():
-        tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
-        if args.local_rank == 0:
-            print('classification')
-            for images, texts, labels in tqdm(val_loader):
-                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
-        else:
-            for images, texts, labels in val_loader:
-                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
-    
-        image_embeddings_all = torch.cat(image_embeddings_all)
-        labels_all = torch.cat(labels_all)
-
-        text_embeddings_new = []
-
-        for c in tqdm(CLASSNAMES):
-            texts = ["A photo of a {}.".format(c)]
-            texts = tokenizer_new(texts, return_tensors='pt', padding=True, truncation=True)
-            text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
-            text_features = text_encoder(**text_inputs).pooler_output
-
-            # Feature embedding
-            text_embeds = text_projection(text_features)
-            text_embeddings_new.append(text_embeds)
-        
-        text_embeddings_new = torch.cat(text_embeddings_new)
-        print("text_embeddings_new :", text_embeddings_new.size())
-        print("image_embeddings_all :", image_embeddings_all.size())
-        print("labels_all :", labels_all.size())
-
-        similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_new.T)
-        top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
-        
-        # Compute top-1 accuracy
-        correct = (top1_pred_indices == labels_all).sum().item()
-
-        total = labels_all.size(0)
-        top1_accuracy = correct / total
-
-        if args.local_rank == 0:
-            print('top1_accuracy :', top1_accuracy*100, end=" ")
-            print('%')
-            wandb.log({'top1_accuracy': top1_accuracy*100})
-            
-        is_best = top1_accuracy > BEST_ACC1
-        BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
-            
-    torch.cuda.empty_cache()
-    
-    return top1_accuracy
-
-def save_checkpoint(state, is_best, filename=LAST_PTH):
-    torch.save(state, filename)
-    if is_best:
-        shutil.copyfile(filename, MODEL_BEST_PTH)
     
 def validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
     global BEST_ACC1
@@ -670,6 +551,9 @@ def main_worker(args):
             param.requires_grad = False
         for param in text_encoder.parameters():
             param.requires_grad = True
+    elif args.train_type == 'lpft':
+        print("lpft")
+        exit()
 
     if args.validate:
         top1_acc = validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, 0, scheduler, optimizer)
@@ -683,9 +567,72 @@ def main_worker(args):
     for epoch in range(args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        full_fine_tuning(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
+        train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
         top1_acc = validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer)
         print(f"top1_acc: {top1_acc}")
+        
+def classification(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
+    global BEST_ACC1
+    
+    image_encoder.eval()
+    text_encoder.eval()
+    image_projection.eval()
+    text_projection.eval()
+    
+    image_embeddings_all = []
+    text_embeddings_all = []
+    labels_all = []
+    
+    with torch.no_grad():
+        tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
+        if args.local_rank == 0:
+            print('classification')
+            for images, texts, labels in tqdm(val_loader):
+                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
+        else:
+            for images, texts, labels in val_loader:
+                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
+    
+        image_embeddings_all = torch.cat(image_embeddings_all)
+        labels_all = torch.cat(labels_all)
+
+        text_embeddings_new = []
+
+        for c in tqdm(CLASSNAMES):
+            texts = ["A photo of a {}.".format(c)]
+            texts = tokenizer_new(texts, return_tensors='pt', padding=True, truncation=True)
+            text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
+            text_features = text_encoder(**text_inputs).pooler_output
+
+            # Feature embedding
+            text_embeds = text_projection(text_features)
+            text_embeddings_new.append(text_embeds)
+        
+        text_embeddings_new = torch.cat(text_embeddings_new)
+        print("text_embeddings_new :", text_embeddings_new.size())
+        print("image_embeddings_all :", image_embeddings_all.size())
+        print("labels_all :", labels_all.size())
+
+        similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_new.T)
+        top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
+        
+        # Compute top-1 accuracy
+        correct = (top1_pred_indices == labels_all).sum().item()
+
+        total = labels_all.size(0)
+        top1_accuracy = correct / total
+
+        if args.local_rank == 0:
+            print('top1_accuracy :', top1_accuracy*100, end=" ")
+            print('%')
+            wandb.log({'top1_accuracy': top1_accuracy*100})
+            
+        is_best = top1_accuracy > BEST_ACC1
+        BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
+            
+    torch.cuda.empty_cache()
+    
+    return top1_accuracy
 
 if __name__ == '__main__':
     main()
