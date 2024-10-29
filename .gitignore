@@ -4,7 +4,7 @@
 *.txt
 *.csv
 *.json
-
+**/__pycache__/
 tf_weights/
 tf_to_pt_weights/
 nohup/

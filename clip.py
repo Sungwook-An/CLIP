@@ -92,6 +92,7 @@ parser.add_argument('--classification', default=False, action='store_true',
 MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
 
+# mango
 LAST_PTH = '/home/mango/LGD-CLIP/clip_ckpt_LP/last.pth.tar'
 MODEL_BEST_PTH = '/home/mango/LGD-CLIP/clip_ckpt_LP/model_best.pth.tar'
 
@@ -99,6 +100,15 @@ WEIGHTS_PATH = '/home/mango/LGD-CLIP/model_best_blurpool_78_528.pth.tar'
 
 TRAIN_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_train_with_labels.csv'
 VAL_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_val_with_labels.csv'
+
+# asu
+# LAST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/last.pth.tar'
+# MODEL_BEST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/model_best.pth.tar'
+
+# WEIGHTS_PATH = '/root/LGD2024/examples_old/imagenet/model_best_blurpool_78_528.pth.tar'
+
+# TRAIN_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_train_with_labels.csv'
+# VAL_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_val_with_labels.csv'
 
 import open_clip
 
@@ -367,17 +377,18 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
     text_projection.eval()
     
     image_embeddings_all = []
+    text_embeddings_all = []
     labels_all = []
     
     with torch.no_grad():
         tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
         if args.local_rank == 0:
-            print('validation')
+            print('classification')
             for images, texts, labels in tqdm(val_loader):
-                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, texts, labels)
+                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
         else:
             for images, texts, labels in val_loader:
-                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, image_projection, image_embeddings_all, labels_all, images, texts, labels)
+                image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
     
         image_embeddings_all = torch.cat(image_embeddings_all)
         labels_all = torch.cat(labels_all)
