@@ -272,15 +272,19 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
     return top1_accuracy, lp_ft_loss
 
 def train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer):
-    if args.train_type == 'lp':    
+    if args.train_type == 'lp':
+        print("Setting train mode for Linear Probing")  
         image_encoder.eval()
         text_encoder.eval()
     elif args.train_type == 'ft':
+        print("Setting train mode for Full Fine-Tuning")
         image_encoder.train()
         text_encoder.train()
     elif args.train_type == 'teft':
+        print("Setting train mode for Text Encoder Fine-Tuning")
         image_encoder.eval()
         text_encoder.train()
+
     image_projection.train()
     text_projection.train()
     
@@ -289,7 +293,7 @@ def train(args, image_encoder, text_encoder, image_projection, text_projection, 
     scheduler.step()
     
     if args.local_rank == 0:
-        print("full fine tuning")
+        print("Training in progress !!!")
         for images, texts, labels in tqdm(train_loader):
             top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
             
@@ -526,12 +530,23 @@ def main_worker(args):
     else:
         train_sampler = None
         val_sampler = None
-    
-    optimizer = optim.Adam(list(image_encoder.parameters()) + list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+    if args.train_type == 'lp':
+        print("Setting optimizer for Linear Probing")
+        optimizer = optim.Adam(list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+    elif args.train_type == 'ft':
+        print("Setting optimizer for Full Fine-Tuning")
+        optimizer = optim.Adam(list(image_encoder.parameters()) + list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+    elif args.train_type == 'teft':
+        print("Setting optimizer for Text Encoder Fine-Tuning")
+        optimizer = optim.Adam(list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+    elif args.train_type == 'lpft':
+        print("Setting optimizer for Linear Probing and Full Fine-Tuning")
+        exit()
+
     if args.warmup_epochs > 0:
         scheduler = WarmupCosineAnnealingLR(optimizer, warmup_epochs=args.warmup_epochs, max_epochs=args.epochs+args.warmup_epochs, min_lr=args.lr/10)
     else:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=1e-6)
     
     if args.distributed:
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size//args.world_size, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=train_sampler)
