@@ -39,6 +39,8 @@ sys.path.insert(0, DIR)
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--data', metavar='DIR', default='/',
                     help='path to dataset')
+parser.add_argument('--base_path', metavar='DIR', default='./',
+                    help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='efficientnet-b1',
                     help='model architecture (default: efficientnet-b1)')
 parser.add_argument('--imagenet', default=False, action='store_true',
@@ -93,24 +95,6 @@ parser.add_argument('--classification', default=False, action='store_true',
                     help='only classification')
 MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
-
-# mango
-LAST_PTH = '/home/mango/LGD-CLIP/clip_ckpt/last.pth.tar'
-MODEL_BEST_PTH = '/home/mango/LGD-CLIP/clip_ckpt/model_best.pth.tar'
-
-WEIGHTS_PATH = '/home/mango/LGD-CLIP/model_best_blurpool_78_528.pth.tar'
-
-TRAIN_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_train_with_labels.csv'
-VAL_CSV_FILE = '/home/mango/LGD-CLIP/imagenet_caption_val_with_labels.csv'
-
-# asu
-# LAST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/last.pth.tar'
-# MODEL_BEST_PTH = '/root/LGD2024/examples_old/imagenet/clip_ckpt/model_best.pth.tar'
-
-# WEIGHTS_PATH = '/root/LGD2024/examples_old/imagenet/model_best_blurpool_78_528.pth.tar'
-
-# TRAIN_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_train_with_labels.csv'
-# VAL_CSV_FILE = '/root/LGD2024/examples_old/imagenet/imagenet_caption_val_with_labels.csv'
 
 # dataset class 정의
 class ImageTextDataset(Dataset):
@@ -233,10 +217,12 @@ def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     
     return loss
 
-def save_checkpoint(state, is_best, filename=LAST_PTH):
+def save_checkpoint(args, state, is_best):
+    filename = os.path.join(args.base_path, 'clip_ckpt/last.pth.tar')
+    model_best_pth = os.path.join(args.base_path, 'clip_ckpt/model_best.pth.tar')
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, MODEL_BEST_PTH)
+        shutil.copyfile(filename, model_best_pth)
 
 def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels):
     images = images.cuda(args.gpu, non_blocking=True)
@@ -294,14 +280,14 @@ def train(args, image_encoder, text_encoder, image_projection, text_projection, 
     
     if args.local_rank == 0:
         print("Training in progress !!!")
-        for images, texts, labels in tqdm(train_loader):
+        for idx, (images, texts, labels) in enumerate(tqdm(train_loader)):
             top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
             
             optimizer.zero_grad()
             lp_ft_loss.backward()
             optimizer.step()
             
-            wandb.log({'lp_ft_top1_accuracy': top1_accuracy*100, 'lp_ft_loss': lp_ft_loss})
+            wandb.log({'lp_ft_top1_accuracy': top1_accuracy*100, 'lp_ft_loss': lp_ft_loss}, step = epoch*len(train_loader.dataset) + idx*len(train_loader) + 1)
     else:
         for images, texts, labels in train_loader:
             top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
@@ -368,13 +354,13 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         if args.local_rank == 0:
             print('top1_accuracy :', top1_accuracy*100, end=" ")
             print('%')
-            wandb.log({'top1_accuracy': top1_accuracy*100})
+            wandb.log({'top1_accuracy': top1_accuracy*100}, step=epoch*len(val_loader.dataset))
             
         is_best = top1_accuracy > BEST_ACC1
         BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
 
         if not args.distributed or (args.distributed and args.rank == 0):
-            save_checkpoint({
+            save_checkpoint(args, {
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'image_encoder_state_dict': image_encoder.state_dict(),
@@ -421,6 +407,12 @@ def main():
 
 def main_worker(args):
     global MODEL
+
+    weights_path = os.path.join(args.base_path, 'model_best_blurpool_78_528.pth.tar')
+    train_csv_file = os.path.join(args.base_path, 'imagenet_caption_train_with_labels.csv')
+    val_csv_file = os.path.join(args.base_path, 'imagenet_caption_val_with_labels.csv')
+
+    
     torch.autograd.set_detect_anomaly(True)
     
     args.rank = int(os.environ.get("RANK", 0))
@@ -442,7 +434,7 @@ def main_worker(args):
         
     # 사전 학습된 모델 로드
     # Image encoder는 EfficientNet_-b1 사용, text encoder는 Transformer 사용
-    image_encoder = EfficientNet.from_pretrained(args.arch, weights_path=WEIGHTS_PATH, advprop=args.advprop)
+    image_encoder = EfficientNet.from_pretrained(args.arch, weights_path=weights_path, advprop=args.advprop)
     
     if hasattr(image_encoder, '_fc'):
         image_encoder._fc = torch.nn.Identity()
@@ -518,8 +510,8 @@ def main_worker(args):
         normalize,
     ])
     
-    train_df = pd.read_csv(TRAIN_CSV_FILE)
-    val_df = pd.read_csv(VAL_CSV_FILE)
+    train_df = pd.read_csv(train_csv_file)
+    val_df = pd.read_csv(val_csv_file)
     
     train_dataset = ImageTextDataset(train_df, train_transforms)
     val_dataset = ImageTextDataset(val_df, val_transforms)
