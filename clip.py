@@ -288,7 +288,7 @@ def train(args, image_encoder, text_encoder, image_projection, text_projection, 
             lp_ft_loss.backward()
             optimizer.step()
             
-            wandb.log({'lp_ft_top1_accuracy': top1_accuracy*100, 'lp_ft_loss': lp_ft_loss}, step = epoch*len(train_loader.dataset) + idx*len(train_loader) + 1)
+            wandb.log({'lp_ft_top1_accuracy': top1_accuracy*100, 'lp_ft_loss': lp_ft_loss}, step = epoch*args.len_data + idx*len(train_loader) + 1)
     else:
         for images, texts, labels in train_loader:
             top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
@@ -355,7 +355,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         if args.local_rank == 0:
             print('top1_accuracy :', top1_accuracy*100, end=" ")
             print('%')
-            wandb.log({'top1_accuracy': top1_accuracy*100}, step=epoch*len(val_loader.dataset))
+            wandb.log({'top1_accuracy': top1_accuracy*100}, step=(epoch+1)*args.len_data)
             
         is_best = top1_accuracy > BEST_ACC1
         BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
@@ -611,6 +611,8 @@ def main_worker(args):
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
     
+    args.len_data = len(train_loader.dataset)
+    
     if args.distributed:
         image_projection._set_static_graph()
 
@@ -642,7 +644,7 @@ def main_worker(args):
         print(f"Classification top1_acc: {top1_acc}")
         return
     
-    for epoch in range(args.epochs):
+    for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
