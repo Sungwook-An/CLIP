@@ -55,15 +55,17 @@ parser.add_argument('-b', '--batch_size', default=64, type=int,
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning_rate', default=1e-2, type=float,
+parser.add_argument('--lr', '--learning_rate', default=1e-4, type=float,
+                    metavar='LR', help='initial learning rate', dest='lr')
+parser.add_argument('--eta_min', default=0.0, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--wd', '--weight_decay', default=5e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
-parser.add_argument('-p', '--print_freq', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
+parser.add_argument('-p', '--print_freq', default=100, type=int,
+                    metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--drop_out', default=0.1, type=float, help='drop out')
 parser.add_argument('--warmup_epochs', default=0, type=int, help='warmup epochs')
 parser.add_argument('--train_type', type=str, choices=["lp", "ft", "teft", "lpft"], required=True, help="Specify the training type: 'lp' for linear probing, 'ft' for fine-tuning, 'teft' for task-specific fine-tuning"
@@ -358,7 +360,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         if args.local_rank == 0:
             print('top1_accuracy :', top1_accuracy*100, end=" ")
             print('%')
-            wandb.log({'top1_accuracy': top1_accuracy*100}, step=epoch)
+            wandb.log({'top1_accuracy': top1_accuracy*100})
             
         is_best = top1_accuracy > BEST_ACC1
         BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
@@ -605,7 +607,7 @@ def main_worker(args):
     if args.warmup_epochs > 0:
         scheduler = WarmupCosineAnnealingLR(optimizer, warmup_epochs=args.warmup_epochs, max_epochs=args.epochs+args.warmup_epochs, min_lr=args.lr/10)
     else:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=1e-7)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=args.eta_min)
     
     if args.distributed:
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size//args.world_size, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True, sampler=train_sampler)
