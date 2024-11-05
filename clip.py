@@ -58,7 +58,7 @@ parser.add_argument('-b', '--batch_size', default=64, type=int,
 parser.add_argument('--lr', '--learning_rate', default=1e-4, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--eta_min', default=0.0, type=float,
-                    metavar='LR', help='initial learning rate', dest='lr')
+                    metavar='ETA MIN', help='eta_min for Cosine Annealing LR')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--wd', '--weight_decay', default=5e-4, type=float,
@@ -150,7 +150,7 @@ class TxtProjectionHead(nn.Module):
         return x
 
 class WarmupCosineAnnealingLR(torch.optim.lr_scheduler._LRScheduler):
-    def __init__(self, optimizer, warmup_epochs, max_epochs, min_lr=1e-6, last_epoch=-1):
+    def __init__(self, optimizer, warmup_epochs, max_epochs, min_lr, last_epoch=-1):
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
         self.min_lr = min_lr
@@ -607,7 +607,7 @@ def main_worker(args):
         exit()
 
     if args.warmup_epochs > 0:
-        scheduler = WarmupCosineAnnealingLR(optimizer, warmup_epochs=args.warmup_epochs, max_epochs=args.epochs+args.warmup_epochs, min_lr=args.lr/10)
+        scheduler = WarmupCosineAnnealingLR(optimizer, warmup_epochs=args.warmup_epochs, max_epochs=args.epochs+args.warmup_epochs, min_lr=args.eta_min)
     else:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=args.eta_min)
     
