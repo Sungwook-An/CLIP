@@ -247,8 +247,8 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
 
     lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
     
-    image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
-    text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
+    image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+    text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
 
     similarities = logit_scale * image_embeds @ text_embeds.T
 
@@ -347,8 +347,8 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         text_embeddings_all = torch.cat(text_embeddings_all)
         labels_all = torch.cat(labels_all)
 
-        image_embeddings_all /= image_embeddings_all.norm(dim=-1, keepdim=True)
-        text_embeddings_all /= text_embeddings_all.norm(dim=-1, keepdim=True)
+        image_embeddings_all = image_embeddings_all / image_embeddings_all.norm(dim=-1, keepdim=True)
+        text_embeddings_all  = text_embeddings_all / text_embeddings_all.norm(dim=-1, keepdim=True)
 
         similarities = logit_scale * image_embeddings_all @ text_embeddings_all.T
 
