@@ -569,6 +569,8 @@ def main_worker(args):
     train_transforms = transforms.Compose([
         transforms.RandomResizedCrop(image_size),
         transforms.RandomHorizontalFlip(),
+        transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+        transforms.RandomGrayscale(p=0.2),
         transforms.ToTensor(),
         normalize,
         ])
