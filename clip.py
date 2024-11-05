@@ -189,12 +189,9 @@ def collate_fn(batch):
 # Contrastive loss function 정의
 def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     # ########## Old loss
-    logits_per_image = logit_scale * image_embeds @ text_embeds.t()
-    logits_per_text = logits_per_image.t()
-    # logits_per_image = torch.matmul(logit_scale * image_embeds, text_embeds.t())
-    # logits_per_text = torch.matmul(text_embeds, (logit_scale * image_embeds).t())
+    logits_per_image = logit_scale * image_embeds @ text_embeds.T
+    logits_per_text = logits_per_image.T
     labels = torch.arange(len(image_embeds)).to(logits_per_image.device)
-    # print(labels.size())
     labels = labels.cuda(args.gpu)
     
     image_loss = nn.CrossEntropyLoss()(logits_per_image, labels)
@@ -230,31 +227,37 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
     labels = labels.cuda(args.gpu)
 
     # Image와 text를 encoding
-    image_features = image_encoder(images).cuda(args.gpu)
-    text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
-    text_features = text_encoder(**text_inputs).pooler_output
+    if args.train_type == 'lp':
+        with torch.no_grad():
+            image_features = image_encoder(images).cuda(args.gpu)
+            text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
+            text_features = text_encoder(**text_inputs).pooler_output
+    elif args.train_type == 'ft':
+        image_features = image_encoder(images).cuda(args.gpu)
+        text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
+        text_features = text_encoder(**text_inputs).pooler_output
+    elif args.train_type == 'teft':
+        with torch.no_grad():
+            image_features = image_encoder(images).cuda(args.gpu)
+        text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
+        text_features = text_encoder(**text_inputs).pooler_output
 
-    # Feature embedding
     image_embeds, logit_scale = image_projection(image_features)
     text_embeds = text_projection(text_features)
-    # logit_scale = 1
 
-    # Loss 계산 및 back prop
     lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
+    
+    image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
+    text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
-    similarities = logit_scale * torch.matmul(image_embeds, text_embeds.T)
+    similarities = logit_scale * image_embeds @ text_embeds.T
 
     top1_pred_indices = similarities.argmax(dim=1)
     top1_pred_labels = labels[top1_pred_indices]
 
-    # Compute top-1 accuracy
     correct = (top1_pred_labels == labels).sum().item()
     total = labels.size(0)
     top1_accuracy = correct / total
-    
-    # strFormat = '%-6s%-5s%-20s%-10s%-11s%-8s\n'
-    # strOut = strFormat % ('epoch=', epoch, 'lp_ft_top1_accuracy=', round(top1_accuracy*100, 4), 'lp_ft_loss=', round(lp_ft_loss.item(), 4))
-    # print(strOut, end="")
     
     return top1_accuracy, lp_ft_loss
 
@@ -310,7 +313,6 @@ def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_proj
     text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
     text_features = text_encoder(**text_inputs).pooler_output
 
-    # Feature embedding
     image_embeds, logit_scale = image_projection(image_features)
     text_embeds = text_projection(text_features)
     
@@ -345,10 +347,10 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         text_embeddings_all = torch.cat(text_embeddings_all)
         labels_all = torch.cat(labels_all)
 
-        # image_embeddings_all = F.normalize(image_embeddings_all, dim=1)
-        # text_embeddings_all = F.normalize(text_embeddings_all, dim=1)
+        image_embeddings_all /= image_embeddings_all.norm(dim=-1, keepdim=True)
+        text_embeddings_all /= text_embeddings_all.norm(dim=-1, keepdim=True)
 
-        similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_all.T)
+        similarities = logit_scale * image_embeddings_all @ text_embeddings_all.T
 
         top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
         top1_pred_labels = labels_all[top1_pred_indices]
@@ -360,7 +362,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
         if args.local_rank == 0:
             print('top1_accuracy :', top1_accuracy*100, end=" ")
             print('%')
-            wandb.log({'top1_accuracy': top1_accuracy*100})
+            wandb.log({'top1_accuracy': top1_accuracy*100, 'logit scale': logit_scale})
             
         is_best = top1_accuracy > BEST_ACC1
         BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
@@ -415,7 +417,6 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
             text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
             text_features = text_encoder(**text_inputs).pooler_output
 
-            # Feature embedding
             text_embeds = text_projection(text_features)
             text_embeddings_new.append(text_embeds)
         
@@ -424,10 +425,9 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
         print("image_embeddings_all :", image_embeddings_all.size())
         print("labels_all :", labels_all.size())
 
-        similarities = logit_scale * torch.matmul(image_embeddings_all, text_embeddings_new.T)
+        similarities = logit_scale * image_embeddings_all @ text_embeddings_new.T
         top1_pred_indices = ((similarities.argmax(dim=1))).to(torch.int)
         
-        # Compute top-1 accuracy
         correct = (top1_pred_indices == labels_all).sum().item()
 
         total = labels_all.size(0)
@@ -544,14 +544,10 @@ def main_worker(args):
             if args.gpu is None:
                 checkpoint = torch.load(args.resume)
             elif torch.cuda.is_available():
-                # Map model to be loaded to specified single gpu.
                 loc = 'cuda:{}'.format(args.gpu)
                 checkpoint = torch.load(args.resume, map_location=loc)
             args.start_epoch = checkpoint['epoch']
             best_acc1 = checkpoint['best_acc1']
-            # if args.gpu is not None:
-            #     # best_acc1 may be from a checkpoint from a different GPU
-            #     best_acc1 = best_acc1.to(args.gpu)
             image_encoder.load_state_dict(checkpoint['image_encoder_state_dict'])
             text_encoder.load_state_dict(checkpoint['text_encoder_state_dict'])
             image_projection.load_state_dict(checkpoint['image_projection_state_dict'])
