@@ -123,19 +123,31 @@ class ImageTextDataset(Dataset):
 
         return images, text_inputs, labels
     
+# class ImgProjectionHead(nn.Module):
+#     def __init__(self, args, input_dim, output_dim):
+#         super(ImgProjectionHead, self).__init__()
+#         dropout_prob = args.drop_out
+#         self.fc = nn.Linear(input_dim, output_dim)
+#         self.dropout = nn.Dropout(p=dropout_prob)
+#         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+#         nn.init.constant_(self.logit_scale, np.log(1 / 0.07))
+    
+#     def forward(self, x):
+#         x = self.dropout(x)
+#         x = self.fc(x)
+#         return x, self.logit_scale.exp()
+    
 class ImgProjectionHead(nn.Module):
     def __init__(self, args, input_dim, output_dim):
         super(ImgProjectionHead, self).__init__()
         dropout_prob = args.drop_out
         self.fc = nn.Linear(input_dim, output_dim)
         self.dropout = nn.Dropout(p=dropout_prob)
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        nn.init.constant_(self.logit_scale, np.log(1 / 0.07))
-    
+
     def forward(self, x):
         x = self.dropout(x)
         x = self.fc(x)
-        return x, self.logit_scale.exp()
+        return x
     
 class TxtProjectionHead(nn.Module):
     def __init__(self, args, input_dim, output_dim):
@@ -242,15 +254,16 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
         text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
         text_features = text_encoder(**text_inputs).pooler_output
 
-    image_embeds, logit_scale = image_projection(image_features)
+    # image_embeds, logit_scale = image_projection(image_features)
+    image_embeds = image_projection(image_features)
     text_embeds = text_projection(text_features)
 
-    lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
-    
     image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
     text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+    
+    lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, 100)
 
-    similarities = logit_scale * image_embeds @ text_embeds.T
+    similarities = 100 * image_embeds @ text_embeds.T
 
     top1_pred_indices = similarities.argmax(dim=1)
     top1_pred_labels = labels[top1_pred_indices]
@@ -288,7 +301,7 @@ def train(args, image_encoder, text_encoder, image_projection, text_projection, 
             print("Setting train mode for Text Encoder Fine-Tuning")
             
         print(f"Training epoch {epoch}")
-        for idx, (images, texts, labels) in enumerate(tqdm(train_loader)):
+        for idx, (images, texts, labels) in enumerate(tqdm(train_loader, ncols=50)):
             top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
             
             optimizer.zero_grad()
@@ -313,14 +326,15 @@ def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_proj
     text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
     text_features = text_encoder(**text_inputs).pooler_output
 
-    image_embeds, logit_scale = image_projection(image_features)
+    # image_embeds, logit_scale = image_projection(image_features)
+    image_embeds = image_projection(image_features)
     text_embeds = text_projection(text_features)
     
     image_embeddings_all.append(image_embeds)
     text_embeddings_all.append(text_embeds)
     labels_all.append(labels)
     
-    return image_embeddings_all, text_embeddings_all, labels_all, logit_scale
+    return image_embeddings_all, text_embeddings_all, labels_all, 100
     
 def validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
     global BEST_ACC1
@@ -337,7 +351,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
     with torch.no_grad():
         if args.local_rank == 0:
             print('validation')
-            for images, texts, labels in tqdm(val_loader):
+            for images, texts, labels in tqdm(val_loader, ncols=50):
                 image_embeddings_all, text_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
         else:
             for images, texts, labels in val_loader:
@@ -400,7 +414,7 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
         tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
         if args.local_rank == 0:
             print('classification')
-            for images, texts, labels in tqdm(val_loader):
+            for images, texts, labels in tqdm(val_loader, ncols=50):
                 image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
         else:
             for images, texts, labels in val_loader:
@@ -411,7 +425,7 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
 
         text_embeddings_new = []
 
-        for c in tqdm(CLASSNAMES):
+        for c in tqdm(CLASSNAMES, ncols=50):
             texts = ["A photo of a {}.".format(c)]
             texts = tokenizer_new(texts, return_tensors='pt', padding=True, truncation=True)
             text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
@@ -565,8 +579,8 @@ def main_worker(args):
     train_transforms = transforms.Compose([
         transforms.RandomResizedCrop(image_size),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
-        transforms.RandomGrayscale(p=0.2),
+         # transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+        # transforms.RandomGrayscale(p=0.2),
         transforms.ToTensor(),
         normalize,
         ])
