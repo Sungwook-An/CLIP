@@ -32,4 +32,4 @@ CUDA_VISIBLE_DEVICES=2,3 torchrun \
     --node_rank=0 \
     --master_addr="localhost" \
     --master_port=1234 \
-    lgd_clip.py --base_path='/root/LGD2024/examples_old/imagenet' --batch_size 512 --lr 1e-4 --eta_min 1e-6 --train_type teft --warmup_epochs 10
+    lgd_clip.py --base_path='/root/LGD2024/examples_old/imagenet' --batch_size 512 --lr 1e-5 --eta_min 1e-7 --train_type teft --warmup_epochs 10

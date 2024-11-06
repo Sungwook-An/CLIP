@@ -301,7 +301,7 @@ def train(args, image_encoder, text_encoder, image_projection, text_projection, 
             print("Setting train mode for Text Encoder Fine-Tuning")
             
         print(f"Training epoch {epoch}")
-        for idx, (images, texts, labels) in enumerate(tqdm(train_loader, ncols=50)):
+        for idx, (images, texts, labels) in enumerate(tqdm(train_loader, ncols=100)):
             top1_accuracy, lp_ft_loss = train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels)
             
             optimizer.zero_grad()
@@ -351,7 +351,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
     with torch.no_grad():
         if args.local_rank == 0:
             print('validation')
-            for images, texts, labels in tqdm(val_loader, ncols=50):
+            for images, texts, labels in tqdm(val_loader, ncols=100):
                 image_embeddings_all, text_embeddings_all, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
         else:
             for images, texts, labels in val_loader:
@@ -414,7 +414,7 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
         tokenizer_new = AutoTokenizer.from_pretrained(MODEL)
         if args.local_rank == 0:
             print('classification')
-            for images, texts, labels in tqdm(val_loader, ncols=50):
+            for images, texts, labels in tqdm(val_loader, ncols=100):
                 image_embeddings_all, _, labels_all, logit_scale = val_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, image_embeddings_all, text_embeddings_all, labels_all, images, texts, labels)
         else:
             for images, texts, labels in val_loader:
@@ -425,7 +425,7 @@ def classification(args, image_encoder, text_encoder, image_projection, text_pro
 
         text_embeddings_new = []
 
-        for c in tqdm(CLASSNAMES, ncols=50):
+        for c in tqdm(CLASSNAMES, ncols=100):
             texts = ["A photo of a {}.".format(c)]
             texts = tokenizer_new(texts, return_tensors='pt', padding=True, truncation=True)
             text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
