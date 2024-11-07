@@ -706,16 +706,20 @@ def main_worker(args):
         train_sampler = None
         val_sampler = None
     if args.train_type == 'lp':
-        print("Setting optimizer for Linear Probing")
+        if args.local_rank == 0:
+            print("Setting optimizer for Linear Probing")
         optimizer = optim.Adam(list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
     elif args.train_type == 'ft':
-        print("Setting optimizer for Full Fine-Tuning")
+        if args.local_rank == 0:
+            print("Setting optimizer for Full Fine-Tuning")
         optimizer = optim.Adam(list(image_encoder.parameters()) + list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
     elif args.train_type == 'teft':
-        print("Setting optimizer for Text Encoder Fine-Tuning")
+        if args.local_rank == 0:
+            print("Setting optimizer for Text Encoder Fine-Tuning")
         optimizer = optim.Adam(list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
     elif args.train_type == 'lpft':
-        print("Setting optimizer for Linear Probing and Full Fine-Tuning")
+        if args.local_rank == 0:
+            print("Setting optimizer for Linear Probing and Full Fine-Tuning")
         exit()
 
     if args.warmup_epochs > 0:
