@@ -422,7 +422,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
     with torch.no_grad():
         if args.local_rank == 0:
             print('validation')
-            for images, texts, labels, _ in tqdm(val_loader):
+            for images, texts, labels, _ in tqdm(val_loader, ncols=100):
                 images = images.cuda(args.gpu)
                 labels = labels.cuda(args.gpu)
                 
