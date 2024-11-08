@@ -369,14 +369,15 @@ def validation_all(args, image_encoder, text_encoder, image_projection, text_pro
         top5_accuracy = correct_top5 / text_embeddings_all.size(0)
         
         incorrect_top1_captions = []
-        for i in range(len(image_embeddings_all)):
-            if i not in top1_pred_indices[i]:
-                correct_caption = texts_all[i]
-                predicted_captions = [texts_all[idx] for idx in top5_pred_indices[i]]
-                incorrect_top1_captions.append({
-                    'correct_caption': correct_caption,
-                    'predicted_top5_captions': predicted_captions
-                })
+        incorrect_indices = (top1_pred_labels != labels_all).nonzero(as_tuple=True)[0]
+        
+        for i in incorrect_indices:
+            correct_caption = texts_all[i]
+            predicted_captions = [texts_all[idx] for idx in top5_pred_indices[i]]
+            incorrect_top1_captions.append({
+                'correct_caption': correct_caption,
+                'predicted_top5_captions': predicted_captions
+            })
                 
         output_file = f'incorrect_top1_captions_{args.local_rank}.json'
         with open(output_file, 'w', encoding='utf-8') as f:
