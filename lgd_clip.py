@@ -326,7 +326,7 @@ def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_proj
     return image_embeddings_all, text_embeddings_all, labels_all, logit_scale
     
 def validation_all(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer):
-    # global BEST_ACC1
+    global BEST_ACC1
     
     image_encoder.eval()
     text_encoder.eval()
@@ -359,11 +359,11 @@ def validation_all(args, image_encoder, text_encoder, image_projection, text_pro
         similarities = logit_scale * image_embeddings_all @ text_embeddings_all.T
 
         top1_pred_indices = similarities.topk(1, dim=1).indices
-        correct_top1 = sum([labels_all[i] in top1_pred_indices[i] for i in range(len(labels_all))])
+        correct_top1 = sum([i in top1_pred_indices[i] for i in range(len(top1_pred_indices))])
         top1_accuracy = correct_top1 / text_embeddings_all.size(0)
         
         top5_pred_indices = similarities.topk(5, dim=1).indices
-        correct_top5 = sum([labels_all[i] in top5_pred_indices[i] for i in range(len(labels_all))])
+        correct_top5 = sum([i in top5_pred_indices[i] for i in range(len(top1_pred_indices))])
         top5_accuracy = correct_top5 / text_embeddings_all.size(0)
         
         incorrect_top1_captions = []
@@ -376,7 +376,7 @@ def validation_all(args, image_encoder, text_encoder, image_projection, text_pro
                     'predicted_top5_captions': predicted_captions
                 })
                 
-        output_file = 'incorrect_top1_captions.json'
+        output_file = f'incorrect_top1_captions_{args.local_rank}.json'
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(incorrect_top1_captions, f, ensure_ascii=False, indent=4)
         
@@ -734,8 +734,6 @@ def main_worker(args):
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, collate_fn=collate_fn, pin_memory=True)
     
-    args.len_data = len(train_loader.dataset)
-    
     if args.distributed:
         image_projection._set_static_graph()
 
@@ -770,7 +768,7 @@ def main_worker(args):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
-        top1_acc = validation(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer)
+        top1_acc = validation_all(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer)
         print(f"top1_acc: {top1_acc*100}%")
 
 if __name__ == '__main__':

@@ -34,11 +34,11 @@ CUDA_VISIBLE_DEVICES=2,3 torchrun \
     --master_port=1234 \
     lgd_clip.py --base_path='/root/LGD2024/examples_old/imagenet' --batch_size 512 --lr 1e-5 --eta_min 1e-7 --train_type teft --epochs 10 --warmup_epochs 0
 
-# 성욱 validation
-CUDA_VISIBLE_DEVICES=2,3 torchrun \
-    --nproc_per_node=2 \
-    --nnodes=1 \
-    --node_rank=0 \
-    --master_addr="localhost" \
-    --master_port=1234 \
-    lgd_clip.py --base_path='/root/LGD2024/examples_old/imagenet' --batch_size 512 --lr 1e-5 --eta_min 1e-7 --train_type teft --warmup_epochs 10 --validate --resume "/root/LGD2024/examples_old/imagenet/clip_ckpt/model_best.pth.tar"
+# # 성욱 validation
+# CUDA_VISIBLE_DEVICES=2,3 torchrun \
+#     --nproc_per_node=2 \
+#     --nnodes=1 \
+#     --node_rank=0 \
+#     --master_addr="localhost" \
+#     --master_port=1234 \
+#     lgd_clip.py --base_path='/root/LGD2024/examples_old/imagenet' --batch_size 512 --lr 1e-5 --eta_min 1e-7 --train_type teft --warmup_epochs 10 --validate --resume "/root/LGD2024/examples_old/imagenet/clip_ckpt/model_best.pth.tar"
