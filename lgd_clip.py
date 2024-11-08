@@ -358,12 +358,14 @@ def validation_all(args, image_encoder, text_encoder, image_projection, text_pro
 
         similarities = logit_scale * image_embeddings_all @ text_embeddings_all.T
 
-        top1_pred_indices = similarities.topk(1, dim=1).indices
-        correct_top1 = sum([i in top1_pred_indices[i] for i in range(len(top1_pred_indices))])
+        top1_pred_indices = similarities.topk(1, dim=1).indices.squeeze(1)
+        top1_pred_labels = labels_all[top1_pred_indices]
+        correct_top1 = (top1_pred_labels == labels_all).sum().item()
         top1_accuracy = correct_top1 / text_embeddings_all.size(0)
-        
+
         top5_pred_indices = similarities.topk(5, dim=1).indices
-        correct_top5 = sum([i in top5_pred_indices[i] for i in range(len(top1_pred_indices))])
+        top5_pred_labels = labels_all[top5_pred_indices]
+        correct_top5 = (top5_pred_labels == labels_all.unsqueeze(1)).any(dim=1).sum().item()
         top5_accuracy = correct_top5 / text_embeddings_all.size(0)
         
         incorrect_top1_captions = []
@@ -379,13 +381,14 @@ def validation_all(args, image_encoder, text_encoder, image_projection, text_pro
         output_file = f'incorrect_top1_captions_{args.local_rank}.json'
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(incorrect_top1_captions, f, ensure_ascii=False, indent=4)
+        print(f"Saved incorrect top1 captions to {output_file}")
         
         if args.local_rank == 0:
             print('top1_accuracy :', top1_accuracy*100, end=" ")
             print('%')
             print('top5_accuracy :', top5_accuracy*100, end=" ")
             print('%')
-            # wandb.log({'top1_accuracy': top1_accuracy*100, 'top5_accuracy': top5_accuracy*100, 'logit scale': logit_scale})
+            wandb.log({'top1_accuracy': top1_accuracy*100, 'top5_accuracy': top5_accuracy*100, 'logit scale': logit_scale})
             
         if not args.validate:
             if args.local_rank == 0:
