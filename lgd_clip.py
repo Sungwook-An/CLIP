@@ -201,18 +201,14 @@ def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     text_loss = nn.CrossEntropyLoss()(logits_per_text, labels)
     loss = (image_loss + text_loss) / 2
     
-    # ########## New loss
-    # image_embeds = F.normalize(image_embeds, dim=1)
-    # text_embeds = F.normalize(text_embeds, dim=1)
-    # # similarity = image_embeds @ text_embeds.t()
+    ########## New loss
+    # similarity = logit_scale * image_embeds @ text_embeds.T
     
     # labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
     # labels = labels.float()
     
-    # distances = torch.cdist(image_embeds, text_embeds, p=2)
-    
-    # positive_pairs = labels * torch.pow(distances, 2)
-    # negative_pairs = (1 - labels) * torch.pow(torch.clamp(1 - distances, min=0.0), 2)
+    # positive_pairs = labels * torch.pow(1 - similarity, 2)
+    # negative_pairs = (1 - labels) * torch.pow(torch.clamp(similarity - 0.5, min=0.0), 2)
     
     # loss = torch.sum(positive_pairs + negative_pairs)
     
@@ -276,7 +272,7 @@ def train(args, image_encoder, text_encoder, image_projection, text_projection, 
         text_encoder.train()
 
     image_projection.train()
-    text_projection.train()
+    # text_projection.train()
     
     if args.distributed:
         train_sampler.set_epoch(epoch)
@@ -331,7 +327,7 @@ def validation_all(args, image_encoder, text_encoder, image_projection, text_pro
     image_encoder.eval()
     text_encoder.eval()
     image_projection.eval()
-    text_projection.eval()
+    # text_projection.eval()
     
     image_embeddings_all = []
     text_embeddings_all = []
@@ -630,14 +626,15 @@ def main_worker(args):
 
     text_encoder = CLIPTextModel.from_pretrained(MODEL)
 
-    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=512)
-    text_projection = TxtProjectionHead(args, input_dim=768, output_dim=512)
+    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=768)
+    # text_projection = TxtProjectionHead(args, input_dim=768, output_dim=512)
+    text_projection = nn.Identity()
     
     if args.distributed:
         image_encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(image_encoder)
         text_encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(text_encoder)
         image_projection = torch.nn.SyncBatchNorm.convert_sync_batchnorm(image_projection)
-        text_projection = torch.nn.SyncBatchNorm.convert_sync_batchnorm(text_projection)
+        # text_projection = torch.nn.SyncBatchNorm.convert_sync_batchnorm(text_projection)
         
         image_encoder = image_encoder.cuda(args.gpu)
         image_encoder = torch.nn.parallel.DistributedDataParallel(image_encoder, device_ids=[args.gpu], find_unused_parameters=True)
@@ -648,13 +645,13 @@ def main_worker(args):
         image_projection = image_projection.cuda(args.gpu)
         image_projection = torch.nn.parallel.DistributedDataParallel(image_projection, device_ids=[args.gpu], find_unused_parameters=True)
 
-        text_projection = text_projection.cuda(args.gpu)
-        text_projection = torch.nn.parallel.DistributedDataParallel(text_projection, device_ids=[args.gpu], find_unused_parameters=True)
+        # # text_projection = text_projection.cuda(args.gpu)
+        # # text_projection = torch.nn.parallel.DistributedDataParallel(text_projection, device_ids=[args.gpu], find_unused_parameters=True)
     else:
         image_encoder = image_encoder.cuda(args.gpu)
         text_encoder = text_encoder.cuda(args.gpu)
         image_projection = image_projection.cuda(args.gpu)
-        text_projection = text_projection.cuda(args.gpu)
+        # # text_projection = text_projection.cuda(args.gpu)
 
     cudnn.benchmark = True
     
@@ -720,7 +717,8 @@ def main_worker(args):
     elif args.train_type == 'teft':
         if args.local_rank == 0:
             print("Setting optimizer for Text Encoder Fine-Tuning")
-        optimizer = optim.Adam(list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+        # optimizer = optim.Adam(list(text_encoder.parameters()) + list(image_projection.parameters()) + list(text_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
+        optimizer = optim.Adam(list(text_encoder.parameters()) + list(image_projection.parameters()), lr=args.lr, betas=(0.9, 0.98), eps=1e-6)
     elif args.train_type == 'lpft':
         if args.local_rank == 0:
             print("Setting optimizer for Linear Probing and Full Fine-Tuning")
