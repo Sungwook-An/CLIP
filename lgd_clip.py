@@ -133,12 +133,11 @@ class ImgProjectionHead(nn.Module):
         self.dropout = nn.Dropout(p=dropout_prob)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         nn.init.constant_(self.logit_scale, np.log(1 / 0.07))
-        self.tau = nn.Parameter(torch.tensor(0.07))
     
     def forward(self, x):
         x = self.dropout(x)
         x = self.fc(x)
-        return x, self.logit_scale.exp(), self.tau
+        return x, self.logit_scale.exp()
        
 class TxtProjectionHead(nn.Module):
     def __init__(self, args, input_dim, output_dim):
@@ -192,16 +191,16 @@ def collate_fn(batch):
     return images, text_inputs, labels, str_texts
 
 # Contrastive loss function
-def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale, tau):
+def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     # ########## Old loss
-    # logits_per_image = logit_scale * image_embeds @ text_embeds.T
-    # logits_per_text = logits_per_image.T
-    # labels = torch.arange(len(image_embeds)).to(logits_per_image.device)
-    # labels = labels.cuda(args.gpu)
+    logits_per_image = logit_scale * image_embeds @ text_embeds.T
+    logits_per_text = logits_per_image.T
+    labels = torch.arange(len(image_embeds)).to(logits_per_image.device)
+    labels = labels.cuda(args.gpu)
     
-    # image_loss = nn.CrossEntropyLoss()(logits_per_image, labels)
-    # text_loss = nn.CrossEntropyLoss()(logits_per_text, labels)
-    # loss = (image_loss + text_loss) / 2
+    image_loss = nn.CrossEntropyLoss()(logits_per_image, labels)
+    text_loss = nn.CrossEntropyLoss()(logits_per_text, labels)
+    loss = (image_loss + text_loss) / 2
     
 
     ########## New loss
@@ -216,32 +215,32 @@ def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale, tau):
     # loss = torch.sum(positive_pairs + negative_pairs)
     
     # Class-wise contrastive loss
-    similarity_matrix = logit_scale * image_embeds @ text_embeds.T
+    # similarity_matrix = logit_scale * image_embeds @ text_embeds.T
     
-    labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
-    positive_mask = labels.float()
+    # labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
+    # positive_mask = labels.float()
     
-    scaled_similarity_matrix = similarity_matrix / tau
-    exp_similarity = torch.exp(scaled_similarity_matrix)
+    # scaled_similarity_matrix = similarity_matrix / tau
+    # exp_similarity = torch.exp(scaled_similarity_matrix)
     
-    masked_exp_similarity = exp_similarity * (1 - positive_mask)
-    denom = masked_exp_similarity.sum(dim=1, keepdim=True) + exp_similarity.sum(dim=1, keepdim=True)
-    probs = exp_similarity / denom
+    # masked_exp_similarity = exp_similarity * (1 - positive_mask)
+    # denom = masked_exp_similarity.sum(dim=1, keepdim=True) + exp_similarity.sum(dim=1, keepdim=True)
+    # probs = exp_similarity / denom
     
-    log_probs = (probs * positive_mask).sum(dim=1)
-    loss_img_to_txt = -torch.log(log_probs).mean()
+    # log_probs = (probs * positive_mask).sum(dim=1)
+    # loss_img_to_txt = -torch.log(log_probs).mean()
     
-    scaled_similarity_matrix_T = similarity_matrix.T / tau
-    exp_similarity_T = torch.exp(scaled_similarity_matrix_T)
+    # scaled_similarity_matrix_T = similarity_matrix.T / tau
+    # exp_similarity_T = torch.exp(scaled_similarity_matrix_T)
     
-    masked_exp_similarity_T = exp_similarity_T * (1 - positive_mask.T)
-    denom_T = masked_exp_similarity_T.sum(dim=1, keepdim=True) + exp_similarity_T.sum(dim=1, keepdim=True)
-    probs_T = exp_similarity_T / denom_T
+    # masked_exp_similarity_T = exp_similarity_T * (1 - positive_mask.T)
+    # denom_T = masked_exp_similarity_T.sum(dim=1, keepdim=True) + exp_similarity_T.sum(dim=1, keepdim=True)
+    # probs_T = exp_similarity_T / denom_T
     
-    log_probs_T = (probs_T * positive_mask.T).sum(dim=1)
-    loss_txt_to_img = -torch.log(log_probs_T).mean()
+    # log_probs_T = (probs_T * positive_mask.T).sum(dim=1)
+    # loss_txt_to_img = -torch.log(log_probs_T).mean()
     
-    loss = (loss_img_to_txt + loss_txt_to_img) / 2
+    # loss = (loss_img_to_txt + loss_txt_to_img) / 2
     
     return loss
 
@@ -272,13 +271,13 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
         text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
         text_features = text_encoder(**text_inputs).pooler_output
 
-    image_embeds, logit_scale, tau = image_projection(image_features)
+    image_embeds, logit_scale = image_projection(image_features)
     text_embeds = text_projection(text_features)
 
     image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
     text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
     
-    lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale, tau)
+    lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
 
     similarities = logit_scale * image_embeds @ text_embeds.T
 
@@ -343,7 +342,7 @@ def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_proj
     text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
     text_features = text_encoder(**text_inputs).pooler_output
 
-    image_embeds, logit_scale, _ = image_projection(image_features)
+    image_embeds, logit_scale = image_projection(image_features)
     text_embeds = text_projection(text_features)
     
     image_embeddings_all.append(image_embeds)
@@ -625,9 +624,8 @@ def main_worker(args):
     global MODEL
 
     weights_path = os.path.join(args.base_path, 'model_best_blurpool_78_528.pth.tar')
-    train_csv_file = os.path.join(args.base_path, 'imagenet_caption_train_with_labels.csv')
-    val_csv_file = os.path.join(args.base_path, 'imagenet_caption_val_with_labels.csv')
-
+    train_csv_file = os.path.join(args.base_path, 'imagenet_picture_train.csv')
+    val_csv_file = os.path.join(args.base_path, 'imagenet_picture_val.csv')
     
     torch.autograd.set_detect_anomaly(True)
     
@@ -656,9 +654,8 @@ def main_worker(args):
 
     text_encoder = CLIPTextModel.from_pretrained(MODEL)
 
-    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=768)
+    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=512)
     text_projection = TxtProjectionHead(args, input_dim=768, output_dim=512)
-    text_projection = nn.Identity()
     
     if args.distributed:
         image_encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(image_encoder)
@@ -800,7 +797,6 @@ def main_worker(args):
             train_sampler.set_epoch(epoch)
         train(args, image_encoder, text_encoder, image_projection, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer)
         top1_acc = validation_all(args, image_encoder, text_encoder, image_projection, text_projection, val_loader, epoch, scheduler, optimizer)
-        print(f"CUDA{args.local_rank} --- top1_acc: {top1_acc*100}%")
 
 if __name__ == '__main__':
     main()

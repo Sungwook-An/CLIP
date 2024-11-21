@@ -6,8 +6,8 @@ sys.path.insert(0, DIR)
 from imagenet_class import CLASSNAMES, TEMPLATES
 
 # 최상위 경로 설정
-base_path = '/database/Data/CLS-LOC/val/'
-output_csv = 'imagenet_data_v2.csv'
+base_path = '/database/Data/CLS-LOC/train/'
+output_csv = 'imagenet_picture_train.csv'
 
 def extract_number(item):
     return int(item[1:])
