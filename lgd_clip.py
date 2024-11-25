@@ -98,6 +98,9 @@ parser.add_argument('--validate', default=False, action='store_true',
                     help='only validate')
 parser.add_argument('--classification', default=False, action='store_true',
                     help='only classification')
+parser.add_argument('--class_wise', default=False, action='store_true',
+                    help='class-wise contrastive loss')
+
 MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
 
@@ -244,6 +247,37 @@ def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     
     return loss
 
+def class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
+    # Class-wise contrastive loss
+    similarity_matrix = logit_scale * image_embeds @ text_embeds.T
+    
+    labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
+    positive_mask = labels.float()
+    
+    scaled_similarity_matrix = similarity_matrix / 0.07
+    exp_similarity = torch.exp(scaled_similarity_matrix)
+    
+    masked_exp_similarity = exp_similarity * (1 - positive_mask)
+    denom = masked_exp_similarity.sum(dim=1, keepdim=True) + exp_similarity.sum(dim=1, keepdim=True)
+    probs = exp_similarity / denom
+    
+    log_probs = (probs * positive_mask).sum(dim=1)
+    loss_img_to_txt = -torch.log(log_probs).mean()
+    
+    scaled_similarity_matrix_T = similarity_matrix.T / 0.07
+    exp_similarity_T = torch.exp(scaled_similarity_matrix_T)
+    
+    masked_exp_similarity_T = exp_similarity_T * (1 - positive_mask.T)
+    denom_T = masked_exp_similarity_T.sum(dim=1, keepdim=True) + exp_similarity_T.sum(dim=1, keepdim=True)
+    probs_T = exp_similarity_T / denom_T
+    
+    log_probs_T = (probs_T * positive_mask.T).sum(dim=1)
+    loss_txt_to_img = -torch.log(log_probs_T).mean()
+    
+    loss = (loss_img_to_txt + loss_txt_to_img) / 2
+    
+    return loss
+
 def save_checkpoint(args, state, is_best):
     filename = os.path.join(args.base_path, 'clip_ckpt/last.pth.tar')
     model_best_pth = os.path.join(args.base_path, 'clip_ckpt/model_best.pth.tar')
@@ -277,7 +311,10 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
     image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
     text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
     
-    lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
+    if args.class_wise:
+        lp_ft_loss = class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
+    else:
+        lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
 
     similarities = logit_scale * image_embeds @ text_embeds.T
 
@@ -624,8 +661,8 @@ def main_worker(args):
     global MODEL
 
     weights_path = os.path.join(args.base_path, 'model_best_blurpool_78_528.pth.tar')
-    train_csv_file = os.path.join(args.base_path, 'imagenet_picture_train.csv')
-    val_csv_file = os.path.join(args.base_path, 'imagenet_picture_val.csv')
+    train_csv_file = os.path.join(args.base_path, 'imagenet_caption_train_with_labels.csv')
+    val_csv_file = os.path.join(args.base_path, 'imagenet_caption_val_with_labels.csv')
     
     torch.autograd.set_detect_anomaly(True)
     

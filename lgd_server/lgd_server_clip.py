@@ -64,7 +64,7 @@ parser.add_argument('--wd', '--weight_decay', default=5e-4, type=float,
 parser.add_argument('-p', '--print_freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--drop_out', default=0.1, type=float, help='drop out')
-parser.add_argument('--warmup_epochs', default=10, type=int, help='warmup epochs')
+parser.add_argument('--warmup_epochs', default=0, type=int, help='warmup epochs')
 parser.add_argument('--projection_dim', default=256, type=int, help='projection dimension')
 
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
@@ -186,30 +186,16 @@ def collate_fn(batch):
     
     return images, text_inputs, labels, str_texts
 
+def save_args_to_txt(args, filename):
+    folder = os.path.join(args.base_path, args.save_folder)
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+    with open(filename, 'w') as f:
+        for key, value in vars(args).items():
+            f.write(f"{key}: {value}\n")
+
 # Contrastive loss function
 def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale, tau):
-    # ########## Old loss
-    # logits_per_image = logit_scale * image_embeds @ text_embeds.T
-    # logits_per_text = logits_per_image.T
-    # labels = torch.arange(len(image_embeds)).to(logits_per_image.device)
-    # labels = labels.cuda(args.gpu)
-    
-    # image_loss = nn.CrossEntropyLoss()(logits_per_image, labels)
-    # text_loss = nn.CrossEntropyLoss()(logits_per_text, labels)
-    # loss = (image_loss + text_loss) / 2
-    
-
-    ########## New loss
-    # similarity_matrix = logit_scale * image_embeds @ text_embeds.T
-    
-    # labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
-    # labels = labels.float()
-    
-    # positive_pairs = labels * torch.pow(1 - similarity_matrix, 2)
-    # negative_pairs = (1 - labels) * torch.pow(torch.clamp(1 + similarity_matrix), 2)
-    
-    # loss = torch.sum(positive_pairs + negative_pairs)
-    
     # Class-wise contrastive loss
     similarity_matrix = logit_scale * image_embeds @ text_embeds.T
     
@@ -597,9 +583,9 @@ def main_worker(args):
     
     train_transforms = transforms.Compose([
         # transforms.RandomResizedCrop(image_size),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
-        transforms.RandomGrayscale(p=0.2),
+        # transforms.RandomHorizontalFlip(),
+        # transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+        # transforms.RandomGrayscale(p=0.2),
         transforms.ToTensor(),
         normalize,
         ])
@@ -681,6 +667,8 @@ def main_worker(args):
         top1_acc = classification(args, image_encoder, text_encoder, text_projection, val_loader, 0, scheduler, optimizer, logit_scale)
         print(f"Classification top1_acc: {top1_acc}")
         return
+
+    save_args_to_txt(args, os.path.join(args.base_path, args.save_folder, 'args.txt'))
     
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
