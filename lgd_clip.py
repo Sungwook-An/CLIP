@@ -70,8 +70,9 @@ parser.add_argument('-p', '--print_freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--drop_out', default=0.1, type=float, help='drop out')
 parser.add_argument('--warmup_epochs', default=0, type=int, help='warmup epochs')
-parser.add_argument('--train_type', type=str, choices=["lp", "ft", "teft", "lpft"], required=True, help="Specify the training type: 'lp' for linear probing, 'ft' for fine-tuning, 'teft' for task-specific fine-tuning"
-)
+parser.add_argument('--output_dim', default=512, type=int, help='output dimension of projection head')
+
+parser.add_argument('--train_type', type=str, choices=["lp", "ft", "teft", "lpft"], required=True, help="Specify the training type: 'lp' for linear probing, 'ft' for fine-tuning, 'teft' for task-specific fine-tuning")
 
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
@@ -136,11 +137,15 @@ class ImgProjectionHead(nn.Module):
         self.dropout = nn.Dropout(p=dropout_prob)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         nn.init.constant_(self.logit_scale, np.log(1 / 0.07))
+        if args.class_wise:
+            self.tau = nn.Parameter(torch.tensor(0.07))
+        else:
+            self.tau = 0.07
     
     def forward(self, x):
         x = self.dropout(x)
         x = self.fc(x)
-        return x, self.logit_scale.exp()
+        return x, self.logit_scale.exp(), self.tau
        
 class TxtProjectionHead(nn.Module):
     def __init__(self, args, input_dim, output_dim):
@@ -205,56 +210,16 @@ def contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
     text_loss = nn.CrossEntropyLoss()(logits_per_text, labels)
     loss = (image_loss + text_loss) / 2
     
-
-    ########## New loss
-    # similarity_matrix = logit_scale * image_embeds @ text_embeds.T
-    
-    # labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
-    # labels = labels.float()
-    
-    # positive_pairs = labels * torch.pow(1 - similarity_matrix, 2)
-    # negative_pairs = (1 - labels) * torch.pow(torch.clamp(1 + similarity_matrix), 2)
-    
-    # loss = torch.sum(positive_pairs + negative_pairs)
-    
-    # Class-wise contrastive loss
-    # similarity_matrix = logit_scale * image_embeds @ text_embeds.T
-    
-    # labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
-    # positive_mask = labels.float()
-    
-    # scaled_similarity_matrix = similarity_matrix / tau
-    # exp_similarity = torch.exp(scaled_similarity_matrix)
-    
-    # masked_exp_similarity = exp_similarity * (1 - positive_mask)
-    # denom = masked_exp_similarity.sum(dim=1, keepdim=True) + exp_similarity.sum(dim=1, keepdim=True)
-    # probs = exp_similarity / denom
-    
-    # log_probs = (probs * positive_mask).sum(dim=1)
-    # loss_img_to_txt = -torch.log(log_probs).mean()
-    
-    # scaled_similarity_matrix_T = similarity_matrix.T / tau
-    # exp_similarity_T = torch.exp(scaled_similarity_matrix_T)
-    
-    # masked_exp_similarity_T = exp_similarity_T * (1 - positive_mask.T)
-    # denom_T = masked_exp_similarity_T.sum(dim=1, keepdim=True) + exp_similarity_T.sum(dim=1, keepdim=True)
-    # probs_T = exp_similarity_T / denom_T
-    
-    # log_probs_T = (probs_T * positive_mask.T).sum(dim=1)
-    # loss_txt_to_img = -torch.log(log_probs_T).mean()
-    
-    # loss = (loss_img_to_txt + loss_txt_to_img) / 2
-    
     return loss
 
-def class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale):
+def class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale, tau):
     # Class-wise contrastive loss
     similarity_matrix = logit_scale * image_embeds @ text_embeds.T
     
     labels = (labels.unsqueeze(1) == labels.unsqueeze(0)).cuda(args.gpu)
     positive_mask = labels.float()
     
-    scaled_similarity_matrix = similarity_matrix / 0.07
+    scaled_similarity_matrix = similarity_matrix / tau
     exp_similarity = torch.exp(scaled_similarity_matrix)
     
     masked_exp_similarity = exp_similarity * (1 - positive_mask)
@@ -264,7 +229,7 @@ def class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_s
     log_probs = (probs * positive_mask).sum(dim=1)
     loss_img_to_txt = -torch.log(log_probs).mean()
     
-    scaled_similarity_matrix_T = similarity_matrix.T / 0.07
+    scaled_similarity_matrix_T = similarity_matrix.T / tau
     exp_similarity_T = torch.exp(scaled_similarity_matrix_T)
     
     masked_exp_similarity_T = exp_similarity_T * (1 - positive_mask.T)
@@ -285,7 +250,7 @@ def save_checkpoint(args, state, is_best):
     if is_best:
         shutil.copyfile(filename, model_best_pth)
 
-def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels):
+def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_projection, epoch, images, texts, labels, tau=0.07):
     images = images.cuda(args.gpu, non_blocking=True)
     labels = labels.cuda(args.gpu)
 
@@ -305,14 +270,14 @@ def train_one_epoch(args, image_encoder, text_encoder, image_projection, text_pr
         text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
         text_features = text_encoder(**text_inputs).pooler_output
 
-    image_embeds, logit_scale = image_projection(image_features)
+    image_embeds, logit_scale, tau = image_projection(image_features)
     text_embeds = text_projection(text_features)
 
     image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
     text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
     
     if args.class_wise:
-        lp_ft_loss = class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
+        lp_ft_loss = class_wise_contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale, tau)
     else:
         lp_ft_loss = contrastive_loss(args, image_embeds, text_embeds, labels, logit_scale)
 
@@ -379,7 +344,7 @@ def val_one_epoch(args, image_encoder, text_encoder, image_projection, text_proj
     text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
     text_features = text_encoder(**text_inputs).pooler_output
 
-    image_embeds, logit_scale = image_projection(image_features)
+    image_embeds, logit_scale, _ = image_projection(image_features)
     text_embeds = text_projection(text_features)
     
     image_embeddings_all.append(image_embeds)
@@ -497,7 +462,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
                 text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
                 text_features = text_encoder(**text_inputs).pooler_output
 
-                image_embeds, logit_scale = image_projection(image_features)
+                image_embeds, logit_scale, _ = image_projection(image_features)
                 text_embeds = text_projection(text_features)
                 
                 image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
@@ -523,7 +488,7 @@ def validation(args, image_encoder, text_encoder, image_projection, text_project
                 text_inputs = {k: v.squeeze(1).cuda(args.gpu) for k, v in texts.items()}
                 text_features = text_encoder(**text_inputs).pooler_output
                 
-                image_embeds, logit_scale = image_projection(image_features)
+                image_embeds, logit_scale, _ = image_projection(image_features)
                 text_embeds = text_projection(text_features)
                 
                 image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
@@ -661,8 +626,8 @@ def main_worker(args):
     global MODEL
 
     weights_path = os.path.join(args.base_path, 'model_best_blurpool_78_528.pth.tar')
-    train_csv_file = os.path.join(args.base_path, 'imagenet_caption_train_with_labels.csv')
-    val_csv_file = os.path.join(args.base_path, 'imagenet_caption_val_with_labels.csv')
+    train_csv_file = os.path.join(args.base_path, 'imagenet_picture_train.csv')
+    val_csv_file = os.path.join(args.base_path, 'imagenet_picture_val.csv')
     
     torch.autograd.set_detect_anomaly(True)
     
@@ -691,8 +656,8 @@ def main_worker(args):
 
     text_encoder = CLIPTextModel.from_pretrained(MODEL)
 
-    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=512)
-    text_projection = TxtProjectionHead(args, input_dim=768, output_dim=512)
+    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=args.output_dim)
+    text_projection = TxtProjectionHead(args, input_dim=768, output_dim=args.output_dim)
     
     if args.distributed:
         image_encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(image_encoder)

@@ -32,7 +32,7 @@ from efficientnet_pytorch import EfficientNet
 DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, DIR)
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
+parser = argparse.ArgumentParser(description='PyTorch Domain Specific data Training')
 parser.add_argument('--data', metavar='DIR', default='/',
                     help='path to dataset')
 parser.add_argument('--base_path', metavar='DIR', default='./',
@@ -234,6 +234,7 @@ def save_checkpoint(args, state, is_best):
     model_best_pth_tar = os.path.join(folder, args.save_best_file)
     torch.save(state, filename)
     if is_best:
+        print("Saving best model")
         shutil.copyfile(filename, model_best_pth_tar)
 
 def train_one_epoch(args, image_encoder, text_encoder, text_projection, epoch, images, texts, labels, logit_scale):
@@ -355,8 +356,8 @@ def validation_all(args, image_encoder, text_encoder, text_projection, val_loade
         # print('%')
             
         if not args.validate:
-            print("Updating best accuracy and saving checkpoint")
-            is_best = top1_accuracy > BEST_ACC1
+            print("Saving checkpoint")
+            is_best = top1_accuracy >= BEST_ACC1
             BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
             
             if not args.distributed or (args.distributed and args.rank == 0):
@@ -415,8 +416,8 @@ def validation(args, image_encoder, text_encoder, text_projection, val_loader, e
 
         if not args.validate:
             if args.local_rank == 0:
-                print("Updating best accuracy and saving checkpoint")
-            is_best = top1_accuracy > BEST_ACC1
+                print("Saving checkpoint")
+            is_best = top1_accuracy >= BEST_ACC1
             BEST_ACC1 = max(top1_accuracy, BEST_ACC1)
             
             if not args.distributed or (args.distributed and args.rank == 0):
@@ -673,8 +674,10 @@ def main_worker(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
+        print(f"Training Epoch {epoch+1}")
         train(args, image_encoder, text_encoder, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer, logit_scale)
         top1_acc = validation_all(args, image_encoder, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale)
+        print("")
 
 if __name__ == '__main__':
     main()
