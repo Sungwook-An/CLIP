@@ -39,8 +39,10 @@ parser.add_argument('--eta_min', default=1e-6, type=float, help='minimum learnin
 parser.add_argument('--init_tau', default=0.07, type=float, help='initial temperature parameter')
 
 parser.add_argument('--ft_img_encoder_path', default='/data001/dlpusers/kangx80/PROJECT/AI_SHARE/SOGANG-LGD_SHARE/SCL_domain_specific/save/SupCE/final_dataset_models/CE_final_final_dataset_efficientnet_b1_initLR_0.005_eta_min_1e-06_epochs_100_bsz_10_cosine_blurpool_graph_nsl_k_2_lambdagraph_0.1/ckpt_model_best.pth', type=str, help='best checkpoint file')
-parser.add_argument('--text_embed_path', default='text_embeddings.pkl', help='path to text embeddings')
+parser.add_argument('--text_embed_path', default='pkl/text_embeddings.pkl', help='path to text embeddings')
 parser.add_argument('--save_folder', default=None, type=str, help='folder to save models')
+parser.add_argument('--save_last_file', default='ckpt_last.pth', type=str, help='last checkpoint file')
+parser.add_argument('--save_best_file', default='ckpt_best.pth', type=str, help='best checkpoint file')
 
 # dataset class
 class FTDataset(Dataset):
@@ -126,26 +128,31 @@ class LanguageGuidedRecognitionHead(torch.nn.Module):
         """
         B, D = image_embed.size()
         C, D = text_embed.size()
+        M = 1 # Number of sentences per class
         
         # Normalize the embeddings
         image_embed = F.layer_norm(image_embed, [D])    # Shape: (B, D)
         text_embed = F.layer_norm(text_embed, [D])      # Shape: (C, D)
         
         # Linear transformations for query (Q) and key (K)
-        Q = self.query_proj(image_embed)    # Shape: (B, D)
-        K = self.key_proj(text_embed)       # Shape: (C, D)
-        V = text_embed                      # Shape: (C, D)
+        Q = self.query_proj(image_embed)                # Shape: (B, D)
+        K = self.key_proj(text_embed)                   # Shape: (C, D)
+        V = text_embed.unsqueeze(1)                     # Shape: (C, M, D)
         
         # Attention mechanism
-        attn_scores = (Q @ K.T) / (D ** 0.5)        # Shape: (B, C)
-        attn_probs = F.softmax(attn_scores, dim=1)  # Shape: (B, C)
-        G = attn_probs @ V                          # Shape: (B, D)
+        attn_scores = Q @ K.T                           # Shape: (B, C)
+        attn_probs = F.softmax(attn_scores, dim=1)      # Shape: (B, C)
+        attn_probs = attn_probs.view(B, C, M)           # Shape: (B, C, M)
+        G = torch.einsum('bcm,cmd->bcd', attn_probs, V) # Shape: (B, C, D)
         
-        # Classification probabilities
-        P_I = F.softmax(self.mlp(image_embed), dim=-1)  # Shape: (B, C)
-        P_T = F.softmax((image_embed * G).sum(dim=-1) / self.tau, dim=-1)
+        # Classification probabilities                    
+        P_I = F.softmax(self.mlp(image_embed), dim=-1)
+        image_embed = F.normalize(image_embed, dim=-1)  # Shape: (B, D)
+        G = F.normalize(G, dim=-1)                      # Shape: (B, C, D)
+        cosine_sim = torch.einsum('bd,bcd->bc', image_embed, G)
+        P_T = F.softmax(cosine_sim / self.tau, dim=-1)
         
-        return P_I + P_T
+        return P_I + P_T                                # Shape: (B, C)
     
 def save_checkpoint(args, state, is_best):
     """
@@ -208,9 +215,7 @@ def train_one_epoch(args, image_encoder, lgr_head, text_embed, optimizer, schedu
         labels = labels.cuda(args.gpu)
         
         # Extract image embeddings using the pre-trained image encoder
-        with torch.no_grad():
-            image_embed = image_encoder(images)
-        
+        image_embed = image_encoder(images)
         # Forward pass through the LGR head
         logits = lgr_head(image_embed, text_embed)
         
@@ -367,6 +372,7 @@ def main():
                 checkpoint = torch.load(args.resume, map_location=loc)
             args.start_epoch = checkpoint['epoch']
             best_acc1 = checkpoint['best_acc1']
+            image_encoder.load_state_dict(checkpoint['image_encoder_state_dict'])
             lgr_head.load_state_dict(checkpoint['lgr_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
@@ -384,6 +390,7 @@ def main():
     
     # Training loop
     best_acc1 = 0.0
+    best_epoch = 0
     for epoch in range(args.epochs):
         # Train for one epoch
         train_loss, train_acc = train_one_epoch(args, image_encoder, lgr_head, text_embeddings, optimizer, scheduler, train_loader, epoch)
@@ -395,17 +402,21 @@ def main():
             is_best = val_acc >= best_acc1
             if val_acc >= best_acc1:
                 best_acc1 = val_acc
+                best_epoch = epoch
 
             save_checkpoint(args, {
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'best_acc1': best_acc1,
+                'image_encoder_state_dict': image_encoder.state_dict(),
                 'lgr_state_dict': lgr_head.state_dict(),
                 'optimizer' : optimizer.state_dict(),
                 'scheduler' : scheduler.state_dict()
             }, is_best)
             
         print(f"Epoch {epoch+1} completed: Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-    
+        print("")
+    print(f"Best validation accuracy: {best_acc1:.2f}% at epoch {best_epoch+1}")
+
 if __name__ == '__main__':
     main()

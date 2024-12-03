@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description='Text Embedding Extraction')
 parser.add_argument('--data', metavar='DIR', default='/', help='path to dataset')
 parser.add_argument('--base_path', metavar='DIR', default='./', help='path to dataset')
 parser.add_argument('--second_pretrained', metavar='DIR', default='save_models/classwise_128_lr1e-7~1e-9_epochs10_projDim512_99.115/model_best.pth.tar', help='path to dataset')
+parser.add_argument('--save_name', metavar='DIR', default='text_embeddings.pkl', help='path to dataset')
 
 args = parser.parse_args()
 
@@ -50,7 +51,12 @@ with torch.no_grad():
 
 # Save text embeddings
 text_embeddings = text_embeddings.cpu()
-with open("text_embeddings.pkl", "wb") as f:
+output_dir = os.path.join(DIR, "pkl")
+
+os.makedirs(output_dir, exist_ok=True)
+output_path = os.path.join(output_dir, args.save_name)
+
+with open(output_path, "wb") as f:
     pickle.dump(text_embeddings, f)
 
 print("")
