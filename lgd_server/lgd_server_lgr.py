@@ -13,6 +13,9 @@ from tqdm import tqdm
 import pandas as pd
 import pickle
 from PIL import Image
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from efficientnet_pytorch import EfficientNet
 
@@ -25,7 +28,7 @@ parser.add_argument('-a', '--arch', metavar='ARCH', default='efficientnet-b1', h
 parser.add_argument('--base_path', metavar='DIR', default='./', help='path to dataset')
 parser.add_argument('--train_csv_file', default='csv/lgd_dataset_train_ft.csv', type=str, help='train csv file')
 parser.add_argument('--val_csv_file', default='csv/lgd_dataset_val_ft.csv', type=str, help='validation csv file')
-parser.add_argument('--resume', default='', type=str, help='path to latest checkpoint (default: none)')
+parser.add_argument('--resume', default=None, type=str, help='path to latest checkpoint (default: none)')
 parser.add_argument('--validate', default=False, action='store_true', help='only validate')
 
 parser.add_argument('--gpu', default=0, type=str, help='GPU ID')
@@ -38,6 +41,7 @@ parser.add_argument('--lr', default=1e-4, type=float, help='initial learning rat
 parser.add_argument('--eta_min', default=1e-6, type=float, help='minimum learning rate for cosine annealing scheduler')
 parser.add_argument('--init_tau', default=0.07, type=float, help='initial temperature parameter')
 
+parser.add_argument('--full', default=False, action='store_true', help='fine-tune full model')
 parser.add_argument('--ft_img_encoder_path', default='/data001/dlpusers/kangx80/PROJECT/AI_SHARE/SOGANG-LGD_SHARE/SCL_domain_specific/save/SupCE/final_dataset_models/CE_final_final_dataset_efficientnet_b1_initLR_0.005_eta_min_1e-06_epochs_100_bsz_10_cosine_blurpool_graph_nsl_k_2_lambdagraph_0.1/ckpt_model_best.pth', type=str, help='best checkpoint file')
 parser.add_argument('--text_embed_path', default='pkl/text_embeddings.pkl', help='path to text embeddings')
 parser.add_argument('--save_folder', default=None, type=str, help='folder to save models')
@@ -266,6 +270,10 @@ def validate(args, image_encoder, lgr_head, text_embed, val_loader, epoch):
     # Define loss function
     criterion = torch.nn.CrossEntropyLoss()
     
+    # For confusion matrix
+    all_preds = []
+    all_labels = []
+    
     with torch.no_grad():
         # Iterate over the validation data
         for images, labels in tqdm(val_loader, desc=f"Validation Epoch {epoch+1}", ncols=100):
@@ -287,11 +295,31 @@ def validate(args, image_encoder, lgr_head, text_embed, val_loader, epoch):
             correct += (preds == labels).sum().item()
             total += labels.size(0)
             
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
     # Calculate average loss and accuracy
     avg_loss = total_loss / len(val_loader)
     accuracy = correct / total * 100
     print(f"Validation Epoch {epoch+1}, Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
-            
+    
+    if args.validate:
+        # Generate confusion matrix
+        cm = confusion_matrix(all_labels, all_preds)
+        
+        # Save confusion matrix plot
+        plt.subplots(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, xticklabels=['Class1','Class2','Class3'], yticklabels=['Class1','Class2','Class3'])
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title('Confusion Matrix')
+        
+        save_folder_path = os.path.dirname(args.resume)
+        plt.savefig(os.path.join(args.base_path, save_folder_path, f'confusion_matrix.png'))
+        plt.close()
+        
+        print("Confusion matrix saved")
+
     torch.cuda.empty_cache()
     
     return avg_loss, accuracy
@@ -301,6 +329,9 @@ def main():
     Main function to initialize the model and training/validation loops.
     """
     args = parser.parse_args()
+    
+    if 'full' in args.resume:
+        args.full = True
     
     # Load text embeddings
     text_embed_path = os.path.join(args.base_path, args.text_embed_path)
@@ -320,7 +351,10 @@ def main():
     lgr_head = lgr_head.cuda(args.gpu)
     
     # Define optimizer
-    optimizer = optim.Adam(list(image_encoder._fc.parameters()) + list(lgr_head.parameters()), lr=args.lr)
+    if args.full:
+        optimizer = optim.Adam(list(image_encoder.parameters()) + list(lgr_head.parameters()), lr=args.lr)
+    else:
+        optimizer = optim.Adam(list(image_encoder._fc.parameters()) + list(lgr_head.parameters()), lr=args.lr)
     
     # Define learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=args.eta_min)
@@ -355,18 +389,22 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
     
     # Freeze all parameters in the image_encoder
-    for param in image_encoder.parameters():
-        param.requires_grad = False
-    # Enable training for the final FC layer
-    for param in image_encoder._fc.parameters():
-        param.requires_grad = True
+    if args.full:
+        for param in image_encoder.parameters():
+            param.requires_grad = True
+    else:
+        for param in image_encoder.parameters():
+            param.requires_grad = False
+        for param in image_encoder._fc.parameters():
+            param.requires_grad = True
     
     # Resume training
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             if args.gpu is None:
-                checkpoint = torch.load(args.resume)
+                print("No GPU ID provided")
+                exit(0)
             elif torch.cuda.is_available():
                 loc = 'cuda:{}'.format(args.gpu)
                 checkpoint = torch.load(args.resume, map_location=loc)
@@ -380,10 +418,11 @@ def main():
                   .format(args.resume, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
+            exit(0)
     
     if args.validate:
-        val_loss, val_acc = validate(args, image_encoder, lgr_head, text_embeddings, val_loader, 0)
-        print(f"Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_acc:.2f}%")
+        test_loss, test_acc = validate(args, image_encoder, lgr_head, text_embeddings, val_loader, 0)
+        print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
         return
     
     save_args_to_txt(args, os.path.join(args.base_path, args.save_folder, 'args.txt'))
