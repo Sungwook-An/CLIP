@@ -13,8 +13,8 @@ sys.path.insert(0, DIR)
 parser = argparse.ArgumentParser(description='Text Embedding Extraction')
 parser.add_argument('--data', metavar='DIR', default='/', help='path to dataset')
 parser.add_argument('--base_path', metavar='DIR', default='./', help='path to dataset')
-parser.add_argument('--second_pretrained', metavar='DIR', default='save_models/classwise_128_lr1e-7~1e-9_epochs10_projDim512_99.115/model_best.pth.tar', help='path to dataset')
-parser.add_argument('--save_name', metavar='DIR', default='text_embeddings.pkl', help='path to dataset')
+parser.add_argument('--ft_pretrained', metavar='DIR', default='save_models_ft/classwise_30_lr1e-7~1e-9_epochs10_projDim512_94.667/model_best.pth.tar', help='path to dataset')
+parser.add_argument('--save_name', metavar='DIR', default='text_embeddings_cw30_lr7~9_ep10_pd512.pkl', help='path to dataset')
 
 args = parser.parse_args()
 
@@ -25,7 +25,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL)
 text_encoder = CLIPTextModel.from_pretrained(MODEL)
 
 # Load pretrained model
-pretrained_path = os.path.join(args.base_path, args.second_pretrained)
+pretrained_path = os.path.join(args.base_path, args.ft_pretrained)
 pretrained_model = torch.load(pretrained_path)
 
 # Load state_dict
@@ -36,7 +36,7 @@ text_encoder.load_state_dict(state_dict)
 text_encoder.eval()
 
 # Class texts
-class_texts = ["A picture of class1", "A picture of class2", "A picture of class3"]
+class_texts = ["A picture of first class", "A picture of second class", "A picture of third class"]
 
 # Text tokenize & GPU load (option)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

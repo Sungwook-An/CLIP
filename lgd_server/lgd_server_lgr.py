@@ -26,8 +26,8 @@ parser = argparse.ArgumentParser(description='PyTorch Fine-Tuning')
 parser.add_argument('--data', metavar='DIR', default='/', help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='efficientnet-b1', help='model architecture (default: efficientnet-b1)')
 parser.add_argument('--base_path', metavar='DIR', default='./', help='path to dataset')
-parser.add_argument('--train_csv_file', default='csv/lgd_dataset_train_ft.csv', type=str, help='train csv file')
-parser.add_argument('--val_csv_file', default='csv/lgd_dataset_val_ft.csv', type=str, help='validation csv file')
+parser.add_argument('--train_csv_file', default='csv/ft_lgr/lgd_dataset_train_ft.csv', type=str, help='train csv file')
+parser.add_argument('--val_csv_file', default='csv/ft_lgr/lgd_dataset_val_ft.csv', type=str, help='validation csv file')
 parser.add_argument('--resume', default=None, type=str, help='path to latest checkpoint (default: none)')
 parser.add_argument('--validate', default=False, action='store_true', help='only validate')
 
@@ -330,7 +330,7 @@ def main():
     """
     args = parser.parse_args()
     
-    if 'full' in args.resume:
+    if args.resume is not None and 'full' in args.resume:
         args.full = True
     
     # Load text embeddings

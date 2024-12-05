@@ -37,6 +37,7 @@ parser.add_argument('--data', metavar='DIR', default='/',
                     help='path to dataset')
 parser.add_argument('--base_path', metavar='DIR', default='./',
                     help='path to dataset')
+parser.add_argument('--stage', choices=['second', 'ft'], help='stage of training (choices: second, ft)')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='efficientnet-b1',
                     help='model architecture (default: efficientnet-b1)')
 parser.add_argument('--imagenet', default=False, action='store_true',
@@ -67,11 +68,6 @@ parser.add_argument('--drop_out', default=0.1, type=float, help='drop out')
 parser.add_argument('--warmup_epochs', default=0, type=int, help='warmup epochs')
 parser.add_argument('--projection_dim', default=256, type=int, help='projection dimension')
 
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
-                    help='use pre-trained model')
-
 parser.add_argument('--world_size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
@@ -86,18 +82,21 @@ parser.add_argument('--seed', default=42, type=int,
 parser.add_argument('--image_size', default=256, type=int,
                     help='image size')
 
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                    help='path to latest checkpoint (default: none)')
 parser.add_argument('--validate', default=False, action='store_true',
                     help='only validate')
 parser.add_argument('--classification', default=False, action='store_true',
                     help='only classification')
 
 parser.add_argument('--imagenet_pretrained', default='ImageNet_clip_ckpt/model_best.pth.tar', type=str, help='imagenet pretrained model')
+parser.add_argument('--second_pretrained', default='save_models/classwise_128_lr1e-7~1e-9_epochs10_projDim512_99.115/model_best.pth.tar', type=str, help='second pretrained model')
 parser.add_argument('--save_folder', default=None, type=str, help='save folder')
 parser.add_argument('--save_last_file', default='last.pth.tar',type=str, help='last checkpoint file')
 parser.add_argument('--save_best_file', default='model_best.pth.tar',type=str, help='best checkpoint file')
 parser.add_argument('--img_encoder_path', default='/data001/dlpusers/kangx80/PROJECT/AI_SHARE/SOGANG-LGD_SHARE/SCL_domain_specific/save/SupCon/lgd_dataset_models/LP20_FT80_NoAug_blurpool_SupCon_lgd_dataset_efficientnet_b1_lr_0.1_decay_0.0001_bsz_128_temp_0.07_trial_0_cosine/ckpt_epoch_100.pth', type=str, help='best checkpoint file')
-parser.add_argument('--train_csv_file', default='csv/lgd_dataset_train.csv', type=str, help='train csv file')
-parser.add_argument('--val_csv_file', default='csv/lgd_dataset_val.csv', type=str, help='val csv file')
+parser.add_argument('--train_csv_file', default='csv/second_train/lgd_dataset_train.csv', type=str, help='train csv file')
+parser.add_argument('--val_csv_file', default='csv/second_train/lgd_dataset_val.csv', type=str, help='val csv file')
 
 MODEL = 'openai/clip-vit-large-patch14'
 BEST_ACC1 = 0
@@ -297,7 +296,7 @@ def val_one_epoch(args, image_encoder, text_encoder, text_projection, image_embe
     
     return image_embeddings_all, text_embeddings_all, labels_all, logit_scale
     
-def validation_all(args, image_encoder, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale):
+def validation_all(args, image_encoder, image_projection, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale):
     global BEST_ACC1
     
     image_encoder.eval()
@@ -365,8 +364,8 @@ def validation_all(args, image_encoder, text_encoder, text_projection, val_loade
                     'epoch': epoch + 1,
                     'arch': args.arch,
                     'image_encoder_state_dict': image_encoder.state_dict(),
-                    'logit_scale': logit_scale.detach().cpu().item(),
                     'text_encoder_state_dict': text_encoder.state_dict(),
+                    'image_projection_state_dict': image_projection.state_dict(),
                     'text_projection_state_dict': text_projection.state_dict(),
                     'best_acc1': BEST_ACC1,
                     'optimizer' : optimizer.state_dict(),
@@ -377,7 +376,7 @@ def validation_all(args, image_encoder, text_encoder, text_projection, val_loade
     
     return top1_accuracy
 
-def validation(args, image_encoder, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale):
+def validation(args, image_encoder, image_projection, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale):
     global BEST_ACC1
     
     image_encoder.eval()
@@ -425,8 +424,8 @@ def validation(args, image_encoder, text_encoder, text_projection, val_loader, e
                     'epoch': epoch + 1,
                     'arch': args.arch,
                     'image_encoder_state_dict': image_encoder.state_dict(),
-                    'logit_scale': logit_scale.detach().cpu().item(),
                     'text_encoder_state_dict': text_encoder.state_dict(),
+                    'image_projection_state_dict': image_projection.state_dict(),
                     'text_projection_state_dict': text_projection.state_dict(),
                     'best_acc1': BEST_ACC1,
                     'optimizer' : optimizer.state_dict(),
@@ -540,7 +539,8 @@ def main_worker(args):
     num_features = image_encoder._fc.in_features
     image_encoder._fc = nn.Linear(num_features, args.projection_dim)
 
-    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=512)
+    image_projection = ImgProjectionHead(args, input_dim=1280, output_dim=512) # only for 'logit_scale'
+    
     text_encoder = CLIPTextModel.from_pretrained(MODEL)
     text_projection = TxtProjectionHead(args, input_dim=768, output_dim=args.projection_dim)
     
@@ -566,7 +566,10 @@ def main_worker(args):
 
     cudnn.benchmark = True
     
-    pretrained_path = os.path.join(args.base_path, args.imagenet_pretrained)
+    if args.stage == 'second':
+        pretrained_path = os.path.join(args.base_path, args.imagenet_pretrained)
+    elif args.stage == 'ft':
+        pretrained_path = os.path.join(args.base_path, args.second_pretrained)
     pretrained_model = torch.load(pretrained_path)
     
     state_dict = pretrained_model['image_projection_state_dict']
@@ -656,11 +659,8 @@ def main_worker(args):
         param.requires_grad = True
 
     logit_scale.requires_grad = True
-        
-    # for group in optimizer.param_groups:
-    #     for param in group['params']:
-    #         print(param.shape, param.requires_grad)
 
+    # image_projection is only for logit_scale, not for training
     if args.validate:
         top1_acc = validation_all(args, image_encoder, text_encoder, text_projection, val_loader, 0, scheduler, optimizer, logit_scale)
         return
@@ -676,7 +676,7 @@ def main_worker(args):
             train_sampler.set_epoch(epoch)
         print(f"Training Epoch {epoch+1}")
         train(args, image_encoder, text_encoder, text_projection, train_loader, train_sampler, epoch, scheduler, optimizer, logit_scale)
-        top1_acc = validation_all(args, image_encoder, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale)
+        top1_acc = validation_all(args, image_encoder, image_projection, text_encoder, text_projection, val_loader, epoch, scheduler, optimizer, logit_scale)
         print("")
 
 if __name__ == '__main__':
